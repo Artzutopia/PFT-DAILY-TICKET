@@ -56,10 +56,11 @@ def init_db():
         )
     """)
 
-    # Add master columns to existing tables (migration-safe)
+    # Add columns to existing tables (migration-safe)
     for col, default in [
         ("master_total", 0), ("master_already", 0), ("master_new", 0),
         ("master_new_ids", "''"), ("master_snapshot_time", "NULL"),
+        ("category_breakdown", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE daily_summary ADD COLUMN {col} INTEGER DEFAULT {default}"
@@ -296,6 +297,38 @@ def save_master_snapshot(report_date_str, master_ids_set, ticket_ids_list):
     conn.close()
     print(f"[Master] Snapshot saved: {len(already)} existing, {len(new)} new, {len(master_ids_set)} in master")
     return {"already": len(already), "new": len(new), "master_total": len(master_ids_set), "new_ids": new}
+
+
+def save_category_breakdown(report_date_str, category_counts):
+    """
+    Save the full Disposition Folder Level 3 breakdown from the FULL pending report.
+    category_counts = {"Internet Issues": 1718, "Router Pickup": 10524, ...}
+    """
+    import json
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE daily_summary SET category_breakdown = ? WHERE report_date = ?",
+              (json.dumps(category_counts), report_date_str))
+    conn.commit()
+    conn.close()
+    print(f"[Categories] Saved {len(category_counts)} categories for {report_date_str}")
+
+
+def get_category_breakdown(report_date_str):
+    """Get category breakdown for a date."""
+    import json
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT category_breakdown FROM daily_summary WHERE report_date = ?", (report_date_str,))
+    row = c.fetchone()
+    conn.close()
+    if row and row["category_breakdown"]:
+        try:
+            return json.loads(row["category_breakdown"])
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
 
 
 def get_available_dates():

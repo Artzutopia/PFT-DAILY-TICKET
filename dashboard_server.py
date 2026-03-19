@@ -28,6 +28,7 @@ from history_db import (
     get_tickets_for_date,
     get_ticket_trail,
     get_all_tickets_for_date,
+    get_category_breakdown,
     init_db,
 )
 
@@ -169,6 +170,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_csv(tickets, fname.replace(" ", "_"))
             else:
                 self.send_json({"error": "date required"}, 400)
+        elif path == "/api/categories":
+            date = params.get("date", [None])[0]
+            if date:
+                cats = get_category_breakdown(date)
+                self.send_json(cats)
+            else:
+                self.send_json({"error": "date required"}, 400)
         elif path == "/api/master-compare":
             date = params.get("date", [None])[0]
             if date:
@@ -238,6 +246,34 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     existing = [t for t in tickets if t.get("ticket_no") in master_ids]
                 fname = f"existing_tickets_{date}.csv"
                 self.send_csv(existing, fname)
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/master-live":
+            date = params.get("date", [None])[0]
+            if date:
+                tickets = get_tickets_for_date(date)
+                master_ids, refreshed = get_master_ids()
+                ticket_ids = [t["ticket_no"] for t in tickets]
+                already = [tid for tid in ticket_ids if tid in master_ids]
+                new = [tid for tid in ticket_ids if tid not in master_ids]
+                self.send_json({
+                    "total_internet": len(ticket_ids),
+                    "already_in_master": len(already),
+                    "new_to_upload": len(new),
+                    "master_total": len(master_ids),
+                    "master_refreshed": refreshed.strftime("%Y-%m-%d %H:%M IST") if refreshed else None,
+                    "new_ticket_ids": new,
+                })
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/download-still-pending":
+            date = params.get("date", [None])[0]
+            if date:
+                tickets = get_all_tickets_for_date(date)
+                master_ids, _ = get_master_ids()
+                still_pending = [t for t in tickets if t.get("ticket_no") not in master_ids]
+                fname = f"still_pending_upload_{date}.csv"
+                self.send_csv(still_pending, fname)
             else:
                 self.send_json({"error": "date required"}, 400)
         elif path == "/api/refresh-master":
@@ -421,6 +457,16 @@ def generate_dashboard_html():
 <!-- Summary Cards -->
 <div class="cards" id="summaryCards"><div class="loading">Loading...</div></div>
 
+<!-- Category Bifurcation (All Ticket Types from Email) -->
+<div class="section" id="categorySection">
+  <div class="section-header">
+    <h3>&#128202; Ticket Bifurcation — All Categories from Email Report</h3>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="categoryContent">
+    <div class="loading">Loading...</div>
+  </div>
+</div>
+
 <!-- Master Sheet Comparison -->
 <div class="section" id="masterSection" style="background:linear-gradient(135deg,#f0f7ff,#e8f0fe);border-left:3px solid var(--accent)">
   <div class="section-header">
@@ -573,82 +619,242 @@ async function loadDate(date) {{
   renderZonePartnerCharts(allTickets);
   renderCritical(allTickets);
   resetFilters();
+  loadCategories(date);
   loadMasterComparison(date);
+}}
+
+// ========== CATEGORY BIFURCATION ==========
+const CAT_COLORS = {{
+  'Internet Issues': '#1a73e8',
+  'Router Pickup': '#f97316',
+  'Others': '#6b7280',
+  'Payment Issues': '#eab308',
+  'Shifting Request': '#8b5cf6',
+  'Partner Misbehavior': '#ef4444',
+  'Refund': '#ec4899',
+  'Change Request': '#14b8a6',
+  'Remove Connection - Talk to Customer': '#64748b',
+  'Unknown': '#94a3b8',
+}};
+
+async function loadCategories(date) {{
+  try {{
+    const cats = await api(`/api/categories?date=${{date}}`);
+    if (!cats || Object.keys(cats).length === 0) {{
+      document.getElementById('categoryContent').innerHTML = '<div class="loading">No category data available</div>';
+      return;
+    }}
+
+    const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
+    const total = sorted.reduce((s, [k,v]) => s + v, 0);
+
+    // Table
+    let tableRows = sorted.map(([cat, count]) => {{
+      const pct = (count / total * 100).toFixed(1);
+      const color = CAT_COLORS[cat] || '#94a3b8';
+      const isInternet = cat === 'Internet Issues';
+      return `<tr style="${{isInternet ? 'background:#eff6ff;font-weight:700' : ''}}">
+        <td><span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}</td>
+        <td class="num">${{count.toLocaleString()}}</td>
+        <td class="num">${{pct}}%</td>
+        <td><div class="bar-bg"><div class="bar-fill" style="width:${{pct}}%;background:${{color}}"></div></div></td>
+      </tr>`;
+    }}).join('');
+
+    tableRows += `<tr style="border-top:2px solid var(--border);font-weight:700">
+      <td>TOTAL</td><td class="num">${{total.toLocaleString()}}</td><td class="num">100%</td><td></td></tr>`;
+
+    const tableHtml = `<div>
+      <table><thead><tr><th>Category (Disposition L3)</th><th style="text-align:right">Tickets</th>
+      <th style="text-align:right">%</th><th>Distribution</th></tr></thead>
+      <tbody>${{tableRows}}</tbody></table></div>`;
+
+    // Doughnut chart
+    const chartHtml = `<div><div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
+
+    document.getElementById('categoryContent').innerHTML = tableHtml + chartHtml;
+
+    // Render chart
+    if (charts.category) charts.category.destroy();
+    charts.category = new Chart(document.getElementById('categoryChart'), {{
+      type: 'doughnut',
+      data: {{
+        labels: sorted.map(([k]) => k),
+        datasets: [{{
+          data: sorted.map(([,v]) => v),
+          backgroundColor: sorted.map(([k]) => CAT_COLORS[k] || '#94a3b8'),
+          borderWidth: 2,
+          borderColor: '#ffffff',
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '50%',
+        plugins: {{
+          legend: {{
+            position: 'right',
+            labels: {{ color: '#6b7280', padding: 8, font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }}
+          }}
+        }}
+      }}
+    }});
+  }} catch(e) {{
+    document.getElementById('categoryContent').innerHTML = '<div class="loading">Could not load categories</div>';
+  }}
 }}
 
 // ========== MASTER SHEET COMPARISON ==========
 async function loadMasterComparison(date) {{
   document.getElementById('masterContent').innerHTML = '<div class="loading">Comparing with master sheet...</div>';
   try {{
-    const data = await api(`/api/master-compare?date=${{date}}`);
-    if (data.error) {{
-      document.getElementById('masterContent').innerHTML = `<p style="color:var(--red)">${{data.error}}</p>`;
+    // 1. Get LOCKED morning snapshot
+    const snapshot = await api(`/api/master-compare?date=${{date}}`);
+
+    // 2. Get LIVE current status
+    let live = null;
+    try {{ live = await api(`/api/master-live?date=${{date}}`); }} catch(e) {{}}
+
+    if (snapshot.error && !live) {{
+      document.getElementById('masterContent').innerHTML = `<p style="color:var(--red)">No comparison data available</p>`;
       return;
     }}
-    const pctNew = data.total_internet ? (data.new_to_upload / data.total_internet * 100).toFixed(1) : 0;
-    const pctOld = data.total_internet ? (data.already_in_master / data.total_internet * 100).toFixed(1) : 0;
+
+    const s = snapshot.error ? null : snapshot;
+    const pctNew = s && s.total_internet ? (s.new_to_upload / s.total_internet * 100).toFixed(1) : 0;
+    const pctOld = s && s.total_internet ? (s.already_in_master / s.total_internet * 100).toFixed(1) : 0;
+
+    // Compute upload progress
+    let uploadedCount = 0;
+    let stillPending = 0;
+    let uploadPct = 0;
+    let liveStatus = '';
+    if (s && live && s.snapshot_fixed) {{
+      // How many of the "new" tickets have now been uploaded to master?
+      uploadedCount = s.new_to_upload - live.new_to_upload;
+      stillPending = live.new_to_upload;
+      uploadPct = s.new_to_upload > 0 ? Math.round(uploadedCount / s.new_to_upload * 100) : 100;
+      if (stillPending === 0) {{
+        liveStatus = '<span style="color:var(--green);font-weight:700">ALL UPLOADED</span>';
+      }} else {{
+        liveStatus = `<span style="color:var(--orange);font-weight:700">${{stillPending}} still pending</span>`;
+      }}
+    }}
 
     document.getElementById('masterRefreshInfo').textContent =
-      data.snapshot_fixed
-        ? `Snapshot fixed at: ${{data.master_refreshed}} (locked)`
-        : data.master_refreshed ? `Live comparison: ${{data.master_refreshed}}` : '';
+      s && s.snapshot_fixed
+        ? `Snapshot: ${{s.master_refreshed}} (locked)`
+        : s && s.master_refreshed ? `Live: ${{s.master_refreshed}}` : '';
 
     document.getElementById('masterContent').innerHTML = `
-      <div class="cards" style="margin-bottom:12px">
+      <!-- ROW 1: Morning Snapshot (Locked) -->
+      <div style="margin-bottom:6px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">
+          Morning Snapshot (10:15 AM — Locked)</span>
+        <span style="font-size:10px;color:var(--text2)">${{s ? s.master_refreshed : ''}}</span>
+      </div>
+      <div class="cards" style="margin-bottom:16px">
         <div class="card" style="border-left:3px solid var(--accent)">
           <div class="card-label">Total Internet Issues</div>
-          <div class="card-value blue">${{data.total_internet.toLocaleString()}}</div>
+          <div class="card-value blue">${{s ? s.total_internet.toLocaleString() : '—'}}</div>
           <div class="card-sub">Filtered from report</div>
         </div>
         <div class="card" style="border-left:3px solid var(--text2)">
-          <div class="card-label">Already in Master Sheet</div>
-          <div class="card-value" style="color:var(--text2)">${{data.already_in_master.toLocaleString()}}</div>
-          <div class="card-sub">${{pctOld}}% — Old/existing tickets</div>
+          <div class="card-label">Already in Master</div>
+          <div class="card-value" style="color:var(--text2)">${{s ? s.already_in_master.toLocaleString() : '—'}}</div>
+          <div class="card-sub">${{pctOld}}% — Old/existing</div>
         </div>
-        <div class="card" style="border-left:3px solid var(--green);background:rgba(34,197,94,.05)">
+        <div class="card" style="border-left:3px solid var(--green);background:#ecfdf5">
           <div class="card-label">&#9733; New Tickets to Upload</div>
-          <div class="card-value green">${{data.new_to_upload.toLocaleString()}}</div>
+          <div class="card-value green">${{s ? s.new_to_upload.toLocaleString() : '—'}}</div>
           <div class="card-sub">${{pctNew}}% — Not yet in master</div>
         </div>
         <div class="card" style="border-left:3px solid var(--border)">
           <div class="card-label">Master Sheet Total</div>
-          <div class="card-value" style="color:var(--text2);font-size:22px">${{data.master_total.toLocaleString()}}</div>
-          <div class="card-sub">${{data.snapshot_fixed ? 'Locked at report time' : 'Live from master sheet'}}</div>
+          <div class="card-value" style="color:var(--text2);font-size:22px">${{s ? s.master_total.toLocaleString() : '—'}}</div>
+          <div class="card-sub">At time of snapshot</div>
         </div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
         <button class="btn btn-download" onclick="window.open('/api/download-new-tickets?date=${{currentDate}}')">
-          &#11015; Download NEW Tickets (${{data.new_to_upload}}) — Full Details CSV
+          &#11015; Download NEW Tickets (${{s ? s.new_to_upload : 0}}) — Full Details CSV
         </button>
         <button class="btn btn-sm" onclick="window.open('/api/download-existing-tickets?date=${{currentDate}}')">
-          &#11015; Download Existing Tickets (${{data.already_in_master}})
+          &#11015; Download Existing (${{s ? s.already_in_master : 0}})
         </button>
         <button class="btn btn-sm" onclick="showNewTicketsList()">
           &#128065; View New Ticket IDs
         </button>
       </div>
+
+      <!-- ROW 2: Live Upload Status -->
+      ${{live ? `
+      <div style="border-top:2px solid var(--border);padding-top:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">
+            Live Upload Status</span>
+          <span style="font-size:10px;color:var(--text2)">Last checked: ${{live.master_refreshed || 'now'}}</span>
+          <button class="btn btn-sm" onclick="refreshLiveStatus()" style="margin-left:auto">&#8635; Check Now</button>
+        </div>
+        <div class="cards">
+          <div class="card" style="border-left:3px solid ${{uploadPct === 100 ? 'var(--green)' : 'var(--orange)'}};
+            background:${{uploadPct === 100 ? '#ecfdf5' : '#fff7ed'}}">
+            <div class="card-label">Upload Progress</div>
+            <div class="card-value" style="color:${{uploadPct === 100 ? 'var(--green)' : 'var(--orange)'}}">${{uploadPct}}%</div>
+            <div class="card-sub">${{liveStatus}}</div>
+            <div style="margin-top:6px">
+              <div class="bar-bg" style="height:8px">
+                <div class="bar-fill" style="width:${{uploadPct}}%;background:${{uploadPct === 100 ? 'var(--green)' : 'var(--orange)'}}"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="border-left:3px solid var(--green)">
+            <div class="card-label">Uploaded to Master</div>
+            <div class="card-value green">${{uploadedCount.toLocaleString()}}</div>
+            <div class="card-sub">of ${{s ? s.new_to_upload.toLocaleString() : '?'}} new tickets</div>
+          </div>
+          <div class="card" style="border-left:3px solid ${{stillPending > 0 ? 'var(--red)' : 'var(--green)'}}">
+            <div class="card-label">Still Pending Upload</div>
+            <div class="card-value ${{stillPending > 0 ? 'red' : 'green'}}">${{stillPending.toLocaleString()}}</div>
+            <div class="card-sub">${{stillPending > 0 ? 'Not yet in master sheet' : 'All done!'}}</div>
+          </div>
+          <div class="card" style="border-left:3px solid var(--accent)">
+            <div class="card-label">Master Sheet Now</div>
+            <div class="card-value blue" style="font-size:22px">${{live.master_total.toLocaleString()}}</div>
+            <div class="card-sub">Current total in master</div>
+          </div>
+        </div>
+        ${{stillPending > 0 ? `
+        <div style="margin-top:10px">
+          <button class="btn btn-download" onclick="window.open('/api/download-still-pending?date=${{currentDate}}')">
+            &#11015; Download Still-Pending Tickets (${{stillPending}}) — CSV
+          </button>
+        </div>` : ''}}
+      </div>` : ''}}
     `;
-    // Store for later use
-    window._newTicketIds = data.new_ticket_ids || [];
+    window._newTicketIds = s ? (s.new_ticket_ids || []) : [];
   }} catch(e) {{
     document.getElementById('masterContent').innerHTML =
-      '<p style="color:var(--orange)">Could not reach master sheet. Check internet connection.</p>';
+      '<p style="color:var(--orange)">Could not load comparison. Check connection.</p>';
   }}
 }}
 
 function showNewTicketsList() {{
   const ids = window._newTicketIds || [];
   if (!ids.length) {{ alert('No new tickets found'); return; }}
-  // Show in drill modal
   const newTickets = allTickets.filter(t => ids.includes(t.ticket_no));
   drillData = newTickets;
   showDrillModal(`New Tickets to Upload (${{newTickets.length}})`, newTickets);
 }}
 
 async function refreshMaster() {{
-  document.getElementById('masterRefreshInfo').textContent = 'Refreshing...';
+  document.getElementById('masterRefreshInfo').textContent = 'Refreshing master sheet...';
   await api('/api/refresh-master');
-  // Wait for refresh to complete
+  setTimeout(() => loadMasterComparison(currentDate), 4000);
+}}
+
+async function refreshLiveStatus() {{
+  await api('/api/refresh-master');
   setTimeout(() => loadMasterComparison(currentDate), 4000);
 }}
 

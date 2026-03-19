@@ -207,7 +207,26 @@ def main():
         except Exception as e:
             log(f"Warning: Could not save to history DB: {e}")
 
-        # Step 5: Snapshot master sheet comparison (FIXED at run time)
+        # Step 5: Save category breakdown from FULL pending report
+        try:
+            from history_db import save_category_breakdown
+            import openpyxl as _opx
+            log("Extracting category breakdown from full report...")
+            _wb = _opx.load_workbook(report_path, read_only=True)
+            _ws = _wb.active
+            _headers = [cell.value for cell in next(_ws.iter_rows(min_row=1, max_row=1))]
+            _l3_idx = _headers.index("Disposition Folder Level 3")
+            _cats = {}
+            for _row in _ws.iter_rows(min_row=2, values_only=True):
+                _val = str(_row[_l3_idx] or "Unknown").strip()
+                _cats[_val] = _cats.get(_val, 0) + 1
+            _wb.close()
+            save_category_breakdown(report_date, _cats)
+            log(f"Category breakdown: {_cats}")
+        except Exception as e:
+            log(f"Warning: Could not save categories: {e}")
+
+        # Step 6: Snapshot master sheet comparison (FIXED at run time)
         try:
             import csv
             import io
