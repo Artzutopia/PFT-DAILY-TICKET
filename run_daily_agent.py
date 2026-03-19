@@ -50,7 +50,8 @@ IMAP_SERVER = "imap.gmail.com"
 IMAP_PORT = 993
 
 SENDER_FILTER = "no-reply-report@kapturecrm.com"
-SUBJECT_KEYWORDS = ["queue", "pending", "report"]
+# Exact subject line to match — ONLY the first email of the day with this subject
+REQUIRED_SUBJECT = "queue wise pending report last 60 days"
 
 
 def get_app_password():
@@ -69,7 +70,13 @@ def get_app_password():
 
 
 def search_todays_morning_report():
-    """Connect to Gmail via IMAP and find today's morning pending report."""
+    """
+    Connect to Gmail via IMAP and find today's FIRST email with
+    subject 'Queue wise pending report last 60 days'.
+
+    IMPORTANT: Only uses the FIRST email of the day with this exact subject.
+    Second/third emails with the same subject are IGNORED.
+    """
     password = get_app_password()
 
     log("Connecting to Gmail via IMAP...")
@@ -77,7 +84,7 @@ def search_todays_morning_report():
     mail.login(GMAIL_USER, password)
     mail.select("inbox")
 
-    # Search for today's emails from Kapture
+    # Search for today's emails from Kapture with "pending" in subject
     today = datetime.now(IST)
     date_str = today.strftime("%d-%b-%Y")  # e.g., "18-Mar-2026"
 
@@ -91,14 +98,10 @@ def search_todays_morning_report():
         return None
 
     ids = message_ids[0].split()
-    log(f"Found {len(ids)} matching email(s) today")
+    log(f"Found {len(ids)} candidate email(s) today")
 
-    # Find the ~10 AM report (between 9:30 AM and 11:00 AM IST)
-    target_start = today.replace(hour=9, minute=30, second=0, microsecond=0)
-    target_end = today.replace(hour=11, minute=0, second=0, microsecond=0)
-
-    best_match = None
-    best_link = None
+    # Collect ALL matching emails with exact subject, then pick the EARLIEST
+    matched_emails = []
 
     for msg_id in ids:
         status, msg_data = mail.fetch(msg_id, "(RFC822)")
@@ -107,9 +110,11 @@ def search_todays_morning_report():
 
         msg = email.message_from_bytes(msg_data[0][1])
 
-        # Check subject contains queue/pending
-        subject = str(msg.get("Subject", "")).lower()
-        if not any(kw in subject for kw in SUBJECT_KEYWORDS):
+        # STRICT subject match: must contain exact phrase
+        subject = str(msg.get("Subject", "")).strip()
+        subject_lower = subject.lower()
+        if REQUIRED_SUBJECT not in subject_lower:
+            log(f"  SKIP (wrong subject): '{subject}'")
             continue
 
         # Parse date
@@ -122,7 +127,7 @@ def search_todays_morning_report():
         except Exception:
             continue
 
-        log(f"  Email: '{msg.get('Subject')}' at {msg_date_ist.strftime('%I:%M %p IST')}")
+        log(f"  MATCH: '{subject}' at {msg_date_ist.strftime('%I:%M %p IST')}")
 
         # Extract download link from body
         body_text = ""
@@ -140,31 +145,34 @@ def search_todays_morning_report():
 
         # Extract Kapture download link
         pattern = r'https://storage\.googleapis\.com/kapture_report/EXCEL_Report/[^">\s]+'
-        match = re.search(pattern, body_text)
-        if not match:
+        link_match = re.search(pattern, body_text)
+        if not link_match:
+            log(f"  WARNING: No download link found in this email")
             continue
 
-        download_link = match.group(0)
-
-        # Prefer the 10 AM report, but take any if no exact match
-        if target_start <= msg_date_ist <= target_end:
-            best_match = msg_date_ist
-            best_link = download_link
-            log(f"  -> Matched as 10 AM morning report!")
-            break
-        elif best_match is None:
-            best_match = msg_date_ist
-            best_link = download_link
+        matched_emails.append((msg_date_ist, link_match.group(0), subject))
 
     mail.logout()
 
-    if best_link:
-        log(f"Selected report from {best_match.strftime('%I:%M %p IST')}")
-        log(f"Download link: {best_link}")
-    else:
-        log("No valid download link found in today's emails.")
+    if not matched_emails:
+        log("No valid 'Queue wise pending report last 60 days' email found today.")
+        return None
 
-    return best_link
+    # Sort by time ascending and pick the FIRST (earliest) one
+    matched_emails.sort(key=lambda x: x[0])
+
+    first_time, first_link, first_subject = matched_emails[0]
+    log(f"")
+    log(f"Using FIRST email of the day:")
+    log(f"  Subject: '{first_subject}'")
+    log(f"  Time: {first_time.strftime('%I:%M %p IST')}")
+    log(f"  Link: {first_link}")
+    if len(matched_emails) > 1:
+        log(f"  NOTE: Ignoring {len(matched_emails) - 1} later email(s) with same subject")
+        for i, (t, _, s) in enumerate(matched_emails[1:], 2):
+            log(f"    #{i} at {t.strftime('%I:%M %p IST')} — IGNORED")
+
+    return first_link
 
 
 def main():
