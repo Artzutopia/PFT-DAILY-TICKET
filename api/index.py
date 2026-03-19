@@ -25,6 +25,8 @@ from history_db import (
     get_ticket_trail,
     get_all_tickets_for_date,
     get_category_breakdown,
+    get_category_aging_pivot,
+    get_full_tickets_by_category_bucket,
     init_db,
 )
 
@@ -157,6 +159,27 @@ def api_categories():
     date = request.args.get("date")
     if date:
         return jsonify(get_category_breakdown(date))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/category-aging")
+def api_category_aging():
+    date = request.args.get("date")
+    if date:
+        return jsonify(get_category_aging_pivot(date))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/download-category-bucket")
+def api_download_category_bucket():
+    date = request.args.get("date")
+    category = request.args.get("category")
+    bucket = request.args.get("bucket")
+    if date:
+        tickets = get_full_tickets_by_category_bucket(date, category, bucket)
+        cat_safe = (category or "all").replace(" ", "_")
+        buck_safe = (bucket or "all").replace(" ", "_")
+        return make_csv_response(tickets, f"tickets_{date}_{cat_safe}_{buck_safe}.csv")
     return jsonify({"error": "date required"}), 400
 
 

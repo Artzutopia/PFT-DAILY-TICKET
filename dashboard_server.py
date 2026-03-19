@@ -29,6 +29,8 @@ from history_db import (
     get_ticket_trail,
     get_all_tickets_for_date,
     get_category_breakdown,
+    get_category_aging_pivot,
+    get_full_tickets_by_category_bucket,
     init_db,
 )
 
@@ -175,6 +177,25 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if date:
                 cats = get_category_breakdown(date)
                 self.send_json(cats)
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/category-aging":
+            date = params.get("date", [None])[0]
+            if date:
+                pivot = get_category_aging_pivot(date)
+                self.send_json(pivot)
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/download-category-bucket":
+            date = params.get("date", [None])[0]
+            category = params.get("category", [None])[0]
+            bucket = params.get("bucket", [None])[0]
+            if date:
+                tickets = get_full_tickets_by_category_bucket(date, category, bucket)
+                cat_safe = (category or "all").replace(" ", "_")
+                buck_safe = (bucket or "all").replace(" ", "_")
+                fname = f"tickets_{date}_{cat_safe}_{buck_safe}.csv"
+                self.send_csv(tickets, fname)
             else:
                 self.send_json({"error": "date required"}, 400)
         elif path == "/api/master-compare":
@@ -639,66 +660,174 @@ const CAT_COLORS = {{
 
 async function loadCategories(date) {{
   try {{
-    const cats = await api(`/api/categories?date=${{date}}`);
-    if (!cats || Object.keys(cats).length === 0) {{
+    // Fetch both: simple category breakdown + pivot data
+    const [cats, pivot] = await Promise.all([
+      api(`/api/categories?date=${{date}}`),
+      api(`/api/category-aging?date=${{date}}`).catch(() => null),
+    ]);
+
+    if ((!cats || Object.keys(cats).length === 0) && !pivot) {{
       document.getElementById('categoryContent').innerHTML = '<div class="loading">No category data available</div>';
       return;
     }}
 
-    const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
-    const total = sorted.reduce((s, [k,v]) => s + v, 0);
+    // ---- PIVOT TABLE (Category × Aging Bracket) ----
+    let pivotHtml = '';
+    if (pivot && pivot.categories && pivot.categories.length > 0) {{
+      const buckets = pivot.buckets;
+      const catData = pivot.data;
+      const totalsByCat = pivot.totals_by_cat;
+      const totalsByBucket = pivot.totals_by_bucket;
+      const grandTotal = pivot.grand_total;
 
-    // Table
-    let tableRows = sorted.map(([cat, count]) => {{
-      const pct = (count / total * 100).toFixed(1);
-      const color = CAT_COLORS[cat] || '#94a3b8';
-      const isInternet = cat === 'Internet Issues';
-      return `<tr style="${{isInternet ? 'background:#eff6ff;font-weight:700' : ''}}">
-        <td><span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}</td>
-        <td class="num">${{count.toLocaleString()}}</td>
-        <td class="num">${{pct}}%</td>
-        <td><div class="bar-bg"><div class="bar-fill" style="width:${{pct}}%;background:${{color}}"></div></div></td>
-      </tr>`;
-    }}).join('');
+      // Build header row
+      let headerCells = `<th style="text-align:left;min-width:180px;position:sticky;left:0;background:#f8fafc;z-index:2">Disposition Folder Level 3</th>`;
+      buckets.forEach(b => {{
+        headerCells += `<th style="text-align:center;min-width:80px;white-space:nowrap">${{b}}</th>`;
+      }});
+      headerCells += `<th style="text-align:center;min-width:90px;font-weight:700">Grand Total</th>`;
 
-    tableRows += `<tr style="border-top:2px solid var(--border);font-weight:700">
-      <td>TOTAL</td><td class="num">${{total.toLocaleString()}}</td><td class="num">100%</td><td></td></tr>`;
+      // Build data rows
+      let bodyRows = '';
+      pivot.categories.forEach(cat => {{
+        const isInternet = cat === 'Internet Issues';
+        const color = CAT_COLORS[cat] || '#94a3b8';
+        const rowStyle = isInternet
+          ? 'background:#eff6ff;font-weight:700'
+          : '';
 
-    const tableHtml = `<div>
-      <table><thead><tr><th>Category (Disposition L3)</th><th style="text-align:right">Tickets</th>
-      <th style="text-align:right">%</th><th>Distribution</th></tr></thead>
-      <tbody>${{tableRows}}</tbody></table></div>`;
+        let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1">
+          <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
+        </td>`;
 
-    // Doughnut chart
-    const chartHtml = `<div><div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
+        buckets.forEach(b => {{
+          const val = (catData[cat] && catData[cat][b]) || 0;
+          if (val > 0) {{
+            const encCat = encodeURIComponent(cat);
+            const encBuck = encodeURIComponent(b);
+            cells += `<td class="num">
+              <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}&bucket=${{encBuck}}"
+                 style="color:${{isInternet ? '#1a73e8' : '#374151'}};text-decoration:none;cursor:pointer;border-bottom:1px dashed ${{isInternet ? '#1a73e8' : '#9ca3af'}}"
+                 title="Download ${{val}} tickets: ${{cat}} / ${{b}}"
+                 target="_blank">${{val.toLocaleString()}}</a>
+            </td>`;
+          }} else {{
+            cells += `<td class="num" style="color:#d1d5db">—</td>`;
+          }}
+        }});
 
-    document.getElementById('categoryContent').innerHTML = tableHtml + chartHtml;
+        // Grand Total for this category
+        const catTotal = totalsByCat[cat] || 0;
+        const encCat = encodeURIComponent(cat);
+        cells += `<td class="num" style="font-weight:700">
+          <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}"
+             style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
+             title="Download all ${{catTotal}} tickets: ${{cat}}"
+             target="_blank">${{catTotal.toLocaleString()}}</a>
+        </td>`;
 
-    // Render chart
-    if (charts.category) charts.category.destroy();
-    charts.category = new Chart(document.getElementById('categoryChart'), {{
-      type: 'doughnut',
-      data: {{
-        labels: sorted.map(([k]) => k),
-        datasets: [{{
-          data: sorted.map(([,v]) => v),
-          backgroundColor: sorted.map(([k]) => CAT_COLORS[k] || '#94a3b8'),
-          borderWidth: 2,
-          borderColor: '#ffffff',
-        }}]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        cutout: '50%',
-        plugins: {{
-          legend: {{
-            position: 'right',
-            labels: {{ color: '#6b7280', padding: 8, font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }}
+        bodyRows += `<tr style="${{rowStyle}}">${{cells}}</tr>`;
+      }});
+
+      // Grand Total row
+      let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">Grand Total</td>`;
+      buckets.forEach(b => {{
+        const val = totalsByBucket[b] || 0;
+        const encBuck = encodeURIComponent(b);
+        totalCells += `<td class="num" style="font-weight:700">
+          <a href="/api/download-category-bucket?date=${{currentDate}}&bucket=${{encBuck}}"
+             style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
+             title="Download all ${{val}} tickets in ${{b}}"
+             target="_blank">${{val.toLocaleString()}}</a>
+        </td>`;
+      }});
+      totalCells += `<td class="num" style="font-weight:700">
+        <a href="/api/download-category-bucket?date=${{currentDate}}"
+           style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
+           title="Download all ${{grandTotal}} tickets"
+           target="_blank">${{grandTotal.toLocaleString()}}</a>
+      </td>`;
+
+      pivotHtml = `
+        <div style="grid-column:1/-1;margin-bottom:12px">
+          <div style="font-size:12px;color:var(--text2);margin-bottom:8px">
+            &#128279; Click any number to download the raw ticket data for that cell
+          </div>
+          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+            <table style="min-width:100%;border-collapse:collapse">
+              <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
+              <tbody>${{bodyRows}}
+                <tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }}
+
+    // ---- SUMMARY TABLE + CHART (existing) ----
+    let summaryHtml = '';
+    let chartHtml = '';
+    if (cats && Object.keys(cats).length > 0) {{
+      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
+      const total = sorted.reduce((s, [k,v]) => s + v, 0);
+
+      let tableRows = sorted.map(([cat, count]) => {{
+        const pct = (count / total * 100).toFixed(1);
+        const color = CAT_COLORS[cat] || '#94a3b8';
+        const isInternet = cat === 'Internet Issues';
+        return `<tr style="${{isInternet ? 'background:#eff6ff;font-weight:700' : ''}}">
+          <td><span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}</td>
+          <td class="num">${{count.toLocaleString()}}</td>
+          <td class="num">${{pct}}%</td>
+          <td><div class="bar-bg"><div class="bar-fill" style="width:${{pct}}%;background:${{color}}"></div></div></td>
+        </tr>`;
+      }}).join('');
+
+      tableRows += `<tr style="border-top:2px solid var(--border);font-weight:700">
+        <td>TOTAL</td><td class="num">${{total.toLocaleString()}}</td><td class="num">100%</td><td></td></tr>`;
+
+      summaryHtml = `<div>
+        <div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+          Category Summary</div>
+        <table><thead><tr><th>Category (Disposition L3)</th><th style="text-align:right">Tickets</th>
+        <th style="text-align:right">%</th><th>Distribution</th></tr></thead>
+        <tbody>${{tableRows}}</tbody></table></div>`;
+
+      chartHtml = `<div><div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+        Distribution Chart</div>
+        <div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
+    }}
+
+    document.getElementById('categoryContent').innerHTML = pivotHtml + summaryHtml + chartHtml;
+
+    // Render doughnut chart
+    if (cats && Object.keys(cats).length > 0) {{
+      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
+      if (charts.category) charts.category.destroy();
+      charts.category = new Chart(document.getElementById('categoryChart'), {{
+        type: 'doughnut',
+        data: {{
+          labels: sorted.map(([k]) => k),
+          datasets: [{{
+            data: sorted.map(([,v]) => v),
+            backgroundColor: sorted.map(([k]) => CAT_COLORS[k] || '#94a3b8'),
+            borderWidth: 2,
+            borderColor: '#ffffff',
+          }}]
+        }},
+        options: {{
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '50%',
+          plugins: {{
+            legend: {{
+              position: 'right',
+              labels: {{ color: '#6b7280', padding: 8, font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }}
+            }}
           }}
         }}
-      }}
-    }});
+      }});
+    }}
   }} catch(e) {{
     document.getElementById('categoryContent').innerHTML = '<div class="loading">Could not load categories</div>';
   }}

@@ -207,9 +207,9 @@ def main():
         except Exception as e:
             log(f"Warning: Could not save to history DB: {e}")
 
-        # Step 5: Save category breakdown from FULL pending report
+        # Step 5: Save category breakdown + full report data for pivot table
         try:
-            from history_db import save_category_breakdown
+            from history_db import save_category_breakdown, save_full_report
             import openpyxl as _opx
             log("Extracting category breakdown from full report...")
             _wb = _opx.load_workbook(report_path, read_only=True)
@@ -223,8 +223,13 @@ def main():
             _wb.close()
             save_category_breakdown(report_date, _cats)
             log(f"Category breakdown: {_cats}")
+
+            # Save ALL tickets from full report for category × aging pivot
+            log("Saving full report tickets for pivot table...")
+            full_count = save_full_report(report_path, report_date, report_time)
+            log(f"Full report: {full_count} tickets saved to database")
         except Exception as e:
-            log(f"Warning: Could not save categories: {e}")
+            log(f"Warning: Could not save categories/full report: {e}")
 
         # Step 6: Snapshot master sheet comparison (FIXED at run time)
         try:

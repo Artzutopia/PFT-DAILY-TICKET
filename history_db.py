@@ -101,6 +101,36 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_no ON ticket_history(ticket_no)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_bucket ON ticket_history(report_date, aging_bucket)")
 
+    # Full report table - ALL tickets from the pending report (all categories)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS full_report_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_date TEXT NOT NULL,
+            ticket_no TEXT,
+            created_date TEXT,
+            created_time TEXT,
+            pending_hours REAL,
+            aging_bucket TEXT,
+            pending_days INTEGER,
+            current_queue TEXT,
+            sub_status TEXT,
+            status TEXT,
+            zone TEXT,
+            mapped_partner TEXT,
+            city TEXT,
+            customer_name TEXT,
+            device_id TEXT,
+            channel_partner TEXT,
+            disposition_l1 TEXT,
+            disposition_l2 TEXT,
+            disposition_l3 TEXT,
+            UNIQUE(report_date, ticket_no)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_full_date ON full_report_history(report_date)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_full_l3 ON full_report_history(report_date, disposition_l3)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_full_l3_bucket ON full_report_history(report_date, disposition_l3, aging_bucket)")
+
     conn.commit()
     conn.close()
 
@@ -329,6 +359,189 @@ def get_category_breakdown(report_date_str):
         except (json.JSONDecodeError, TypeError):
             return {}
     return {}
+
+
+def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
+    """
+    Save ALL tickets from the full pending report (all categories) into the database.
+    This enables category × aging bucket pivot tables with downloadable raw data.
+    """
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Clear existing data for this date
+    c.execute("DELETE FROM full_report_history WHERE report_date = ?", (report_date_str,))
+
+    wb = openpyxl.load_workbook(full_xlsx_path, read_only=True)
+    ws = wb.active
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    col = {h: i for i, h in enumerate(headers) if h}
+
+    tickets = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        created_date = row[col.get("Created Date", 1)]
+        created_time = row[col.get("Created Time", 2)]
+        created_dt = parse_datetime_ist(
+            str(created_date) if created_date else None,
+            str(created_time) if created_time else None,
+        )
+
+        if created_dt and report_time_ist:
+            hours = max(0, (report_time_ist - created_dt).total_seconds() / 3600)
+        else:
+            hours = None
+
+        bucket = get_bucket(hours)
+        ticket = (
+            report_date_str,
+            str(row[col.get("Ticket No", 0)] or ""),
+            str(created_date or ""),
+            str(created_time or ""),
+            round(hours, 1) if hours is not None else None,
+            bucket,
+            row[col.get("Pending No of Days", 63)] if col.get("Pending No of Days") else None,
+            str(row[col.get("Current Queue Name", 47)] or "Unknown").strip(),
+            str(row[col.get("Sub Status", 83)] or "Unknown").strip(),
+            str(row[col.get("Status", 82)] or "Unknown").strip(),
+            str(row[col.get("Zone", 70)] or "").strip(),
+            str(row[col.get("Mapped Partner name", 69)] or "").strip(),
+            str(row[col.get("City", 72)] or "").strip(),
+            str(row[col.get("Customer Name", 65)] or "").strip(),
+            str(row[col.get("Device ID", 68)] or "").strip(),
+            str(row[col.get("Channel Partner", 67)] or "").strip(),
+            str(row[col.get("Disposition Folder Level 1", 39)] or "").strip(),
+            str(row[col.get("Disposition Folder Level 2", 40)] or "").strip(),
+            str(row[col.get("Disposition Folder Level 3", 41)] or "").strip(),
+        )
+        tickets.append(ticket)
+
+    wb.close()
+
+    c.executemany("""
+        INSERT OR REPLACE INTO full_report_history
+        (report_date, ticket_no, created_date, created_time, pending_hours,
+         aging_bucket, pending_days, current_queue, sub_status, status,
+         zone, mapped_partner, city, customer_name, device_id, channel_partner,
+         disposition_l1, disposition_l2, disposition_l3)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, tickets)
+
+    conn.commit()
+    conn.close()
+    print(f"[FullReport] Saved {len(tickets)} tickets from full report for {report_date_str}")
+    return len(tickets)
+
+
+# Pivot bucket mapping: combine < 4h and 4h-12h into 0-12h for the pivot display
+PIVOT_BUCKETS = [
+    ("0-12 hrs", ["< 4h", "4h - 12h"]),
+    ("12-24 hrs", ["12h - 24h"]),
+    ("24-36 hrs", ["24h - 36h"]),
+    ("36-48 hrs", ["36h - 48h"]),
+    ("48-72 hrs", ["48h - 72h"]),
+    ("72-120 hrs", ["72h - 120h"]),
+    (">120 hrs", ["> 120h"]),
+]
+
+PIVOT_BUCKET_LABELS = [b[0] for b in PIVOT_BUCKETS]
+
+
+def get_category_aging_pivot(report_date_str):
+    """
+    Get a pivot table: Category × Aging Bucket with ticket counts.
+    Returns: {
+        "categories": ["Internet Issues", "Others", ...],
+        "buckets": ["0-12 hrs", "12-24 hrs", ...],
+        "data": {"Internet Issues": {"0-12 hrs": 359, "12-24 hrs": 587, ...}, ...},
+        "totals_by_cat": {"Internet Issues": 1718, ...},
+        "totals_by_bucket": {"0-12 hrs": 364, ...},
+        "grand_total": 1868
+    }
+    """
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT disposition_l3, aging_bucket, COUNT(*) as cnt
+        FROM full_report_history
+        WHERE report_date = ?
+        GROUP BY disposition_l3, aging_bucket
+    """, (report_date_str,))
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return {}
+
+    # Build pivot
+    data = {}
+    for row in rows:
+        cat = row["disposition_l3"] or "Unknown"
+        db_bucket = row["aging_bucket"] or "Unknown"
+        cnt = row["cnt"]
+        if cat not in data:
+            data[cat] = {}
+        # Map DB bucket to pivot bucket
+        for pivot_label, db_labels in PIVOT_BUCKETS:
+            if db_bucket in db_labels:
+                data[cat][pivot_label] = data[cat].get(pivot_label, 0) + cnt
+                break
+
+    # Sort categories by total descending
+    totals_by_cat = {cat: sum(buckets.values()) for cat, buckets in data.items()}
+    sorted_cats = sorted(totals_by_cat.keys(), key=lambda c: totals_by_cat[c], reverse=True)
+
+    # Totals by bucket
+    totals_by_bucket = {}
+    for b_label in PIVOT_BUCKET_LABELS:
+        totals_by_bucket[b_label] = sum(data.get(cat, {}).get(b_label, 0) for cat in sorted_cats)
+
+    grand_total = sum(totals_by_cat.values())
+
+    return {
+        "categories": sorted_cats,
+        "buckets": PIVOT_BUCKET_LABELS,
+        "data": data,
+        "totals_by_cat": totals_by_cat,
+        "totals_by_bucket": totals_by_bucket,
+        "grand_total": grand_total,
+    }
+
+
+def get_full_tickets_by_category_bucket(report_date_str, category=None, bucket=None):
+    """
+    Get raw ticket data from full report filtered by category and/or aging bucket.
+    bucket should be a pivot bucket label like '0-12 hrs'.
+    """
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    query = "SELECT * FROM full_report_history WHERE report_date = ?"
+    params = [report_date_str]
+
+    if category:
+        query += " AND disposition_l3 = ?"
+        params.append(category)
+
+    if bucket:
+        # Map pivot bucket to DB bucket labels
+        db_labels = []
+        for pivot_label, labels in PIVOT_BUCKETS:
+            if pivot_label == bucket:
+                db_labels = labels
+                break
+        if db_labels:
+            placeholders = ",".join("?" * len(db_labels))
+            query += f" AND aging_bucket IN ({placeholders})"
+            params.extend(db_labels)
+
+    query += " ORDER BY pending_hours DESC"
+    c.execute(query, params)
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
 
 
 def get_available_dates():
