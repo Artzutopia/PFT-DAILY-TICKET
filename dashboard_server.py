@@ -886,7 +886,6 @@ async function loadCategories(date) {{
       document.getElementById('pivotBody').innerHTML = bodyRows +
         `<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>`;
     }};
-    }}
 
     // ---- SUMMARY TABLE + CHART (existing) ----
     let summaryHtml = '';
