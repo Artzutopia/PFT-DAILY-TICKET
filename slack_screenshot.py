@@ -30,7 +30,7 @@ def take_screenshot():
     print("[Slack] Opening dashboard for screenshot...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        page = browser.new_page(viewport={"width": 1600, "height": 1000}, device_scale_factor=2)
 
         page.goto(DASHBOARD_URL, wait_until="networkidle", timeout=60000)
         page.wait_for_timeout(5000)
@@ -75,13 +75,33 @@ def take_screenshot():
             const tempDiv = document.createElement('div');
             tempDiv.id = 'screenshotArea';
             tempDiv.style.background = 'white';
-            tempDiv.style.padding = '20px';
+            tempDiv.style.padding = '32px';
             tempDiv.style.borderRadius = '12px';
             tempDiv.style.border = '1px solid #e2e8f0';
+            tempDiv.style.width = '1500px';
+            tempDiv.style.fontSize = '16px';
 
-            tempDiv.appendChild(header.cloneNode(true));
-            tempDiv.appendChild(tableWrapper.cloneNode(true));
-            if (hint) tempDiv.appendChild(hint.cloneNode(true));
+            // Clone and style the header
+            const headerClone = header.cloneNode(true);
+            headerClone.style.marginBottom = '16px';
+            const h3 = headerClone.querySelector('h3');
+            if (h3) h3.style.fontSize = '22px';
+
+            // Clone table and make text bigger
+            const tableClone = tableWrapper.cloneNode(true);
+            const table = tableClone.querySelector('table') || tableClone;
+            table.style.fontSize = '15px';
+            table.querySelectorAll('th, td').forEach(cell => {
+                cell.style.padding = '12px 16px';
+            });
+
+            tempDiv.appendChild(headerClone);
+            tempDiv.appendChild(tableClone);
+            if (hint) {
+                const hintClone = hint.cloneNode(true);
+                hintClone.style.marginTop = '12px';
+                tempDiv.appendChild(hintClone);
+            }
 
             document.body.appendChild(tempDiv);
         }""")
