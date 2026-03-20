@@ -775,24 +775,34 @@ async function loadCategories(date) {{
 
       const buckets = pivot.buckets;
 
-      // Build filter options
-      let filterOptions = `<option value="">All Categories</option>`;
-      pivot.categories.forEach(cat => {{
-        filterOptions += `<option value="${{cat}}">${{cat}}</option>`;
-      }});
+      // Build checkbox filter
+      let checkboxes = pivot.categories.map(cat => {{
+        const color = CAT_COLORS[cat] || '#94a3b8';
+        const isInternet = cat === 'Internet Issues';
+        return `<label style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;border:1.5px solid ${{color}};cursor:pointer;font-size:11px;font-weight:${{isInternet?'700':'500'}};background:${{isInternet?'#eff6ff':'#fff'}};white-space:nowrap;user-select:none;transition:all .15s"
+          onmouseover="this.style.boxShadow='0 1px 4px rgba(0,0,0,.12)'" onmouseout="this.style.boxShadow='none'">
+          <input type="checkbox" checked data-cat="${{cat}}" onchange="filterPivotTable()"
+            style="accent-color:${{color}};width:13px;height:13px;cursor:pointer">
+          <span class="dot" style="background:${{color}};width:8px;height:8px;border-radius:50%;display:inline-block"></span>
+          ${{cat}}
+        </label>`;
+      }}).join('');
 
       pivotHtml = `
         <div style="grid-column:1/-1;margin-bottom:12px">
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
             <div style="font-size:12px;color:var(--text2)">
               &#128279; Click any number to download the raw ticket data for that cell
             </div>
-            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-              <label style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.3px">Filter by Category:</label>
-              <select id="pivotCatFilter" onchange="filterPivotTable()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;min-width:200px">
-                ${{filterOptions}}
-              </select>
-              <button onclick="document.getElementById('pivotCatFilter').value='';filterPivotTable()" class="btn" style="padding:4px 10px;font-size:11px">Clear</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;padding:8px 12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px">
+            <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.3px;margin-right:4px">Filter:</span>
+            ${{checkboxes}}
+            <div style="margin-left:auto;display:flex;gap:6px">
+              <button onclick="document.querySelectorAll('#pivotFilterBar input[type=checkbox]').forEach(c=>c.checked=true);filterPivotTable()"
+                class="btn" style="padding:3px 10px;font-size:10px;font-weight:600">Select All</button>
+              <button onclick="document.querySelectorAll('#pivotFilterBar input[type=checkbox]').forEach(c=>c.checked=false);filterPivotTable()"
+                class="btn" style="padding:3px 10px;font-size:10px;font-weight:600">Deselect All</button>
             </div>
           </div>
           <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
@@ -809,13 +819,19 @@ async function loadCategories(date) {{
       const pivot = window._pivotData;
       if (!pivot) return;
 
-      const filterVal = (document.getElementById('pivotCatFilter') || {{}}).value || '';
       const buckets = pivot.buckets;
       const catData = pivot.data;
       const totalsByCat = pivot.totals_by_cat;
 
-      // Determine which categories to show
-      const catsToShow = filterVal ? [filterVal] : pivot.categories;
+      // Determine which categories to show from checked checkboxes
+      const checked = Array.from(document.querySelectorAll('input[data-cat]:checked')).map(c => c.dataset.cat);
+      const catsToShow = checked.length > 0 ? pivot.categories.filter(c => checked.includes(c)) : [];
+
+      if (catsToShow.length === 0) {{
+        document.getElementById('pivotHead').innerHTML = '';
+        document.getElementById('pivotBody').innerHTML = '<tr><td style="text-align:center;padding:30px;color:var(--text2)">Select at least one category to view data</td></tr>';
+        return;
+      }}
 
       // Build header
       let headerCells = `<th style="text-align:left;min-width:180px;position:sticky;left:0;background:#f8fafc;z-index:2">Disposition Folder Level 3</th>`;
