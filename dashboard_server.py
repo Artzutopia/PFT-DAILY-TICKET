@@ -770,27 +770,70 @@ async function loadCategories(date) {{
     // ---- PIVOT TABLE (Category × Aging Bracket) ----
     let pivotHtml = '';
     if (pivot && pivot.categories && pivot.categories.length > 0) {{
+      // Store pivot data globally for filtering
+      window._pivotData = pivot;
+
+      const buckets = pivot.buckets;
+
+      // Build filter options
+      let filterOptions = `<option value="">All Categories</option>`;
+      pivot.categories.forEach(cat => {{
+        filterOptions += `<option value="${{cat}}">${{cat}}</option>`;
+      }});
+
+      pivotHtml = `
+        <div style="grid-column:1/-1;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+            <div style="font-size:12px;color:var(--text2)">
+              &#128279; Click any number to download the raw ticket data for that cell
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+              <label style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.3px">Filter by Category:</label>
+              <select id="pivotCatFilter" onchange="filterPivotTable()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;min-width:200px">
+                ${{filterOptions}}
+              </select>
+              <button onclick="document.getElementById('pivotCatFilter').value='';filterPivotTable()" class="btn" style="padding:4px 10px;font-size:11px">Clear</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+            <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
+              <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
+              <tbody id="pivotBody"></tbody>
+            </table>
+          </div>
+        </div>`;
+    }}
+
+    // Pivot filter + render function
+    window.filterPivotTable = function() {{
+      const pivot = window._pivotData;
+      if (!pivot) return;
+
+      const filterVal = (document.getElementById('pivotCatFilter') || {{}}).value || '';
       const buckets = pivot.buckets;
       const catData = pivot.data;
       const totalsByCat = pivot.totals_by_cat;
-      const totalsByBucket = pivot.totals_by_bucket;
-      const grandTotal = pivot.grand_total;
 
-      // Build header row
+      // Determine which categories to show
+      const catsToShow = filterVal ? [filterVal] : pivot.categories;
+
+      // Build header
       let headerCells = `<th style="text-align:left;min-width:180px;position:sticky;left:0;background:#f8fafc;z-index:2">Disposition Folder Level 3</th>`;
       buckets.forEach(b => {{
         headerCells += `<th style="text-align:center;min-width:80px;white-space:nowrap">${{b}}</th>`;
       }});
       headerCells += `<th style="text-align:center;min-width:90px;font-weight:700">Grand Total</th>`;
+      document.getElementById('pivotHead').innerHTML = headerCells;
 
       // Build data rows
       let bodyRows = '';
-      pivot.categories.forEach(cat => {{
+      let filteredTotalsByBucket = {{}};
+      let filteredGrandTotal = 0;
+
+      catsToShow.forEach(cat => {{
         const isInternet = cat === 'Internet Issues';
         const color = CAT_COLORS[cat] || '#94a3b8';
-        const rowStyle = isInternet
-          ? 'background:#eff6ff;font-weight:700'
-          : '';
+        const rowStyle = isInternet ? 'background:#eff6ff;font-weight:700' : '';
 
         let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1">
           <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
@@ -798,6 +841,7 @@ async function loadCategories(date) {{
 
         buckets.forEach(b => {{
           const val = (catData[cat] && catData[cat][b]) || 0;
+          filteredTotalsByBucket[b] = (filteredTotalsByBucket[b] || 0) + val;
           if (val > 0) {{
             const encCat = encodeURIComponent(cat);
             const encBuck = encodeURIComponent(b);
@@ -812,8 +856,8 @@ async function loadCategories(date) {{
           }}
         }});
 
-        // Grand Total for this category
         const catTotal = totalsByCat[cat] || 0;
+        filteredGrandTotal += catTotal;
         const encCat = encodeURIComponent(cat);
         cells += `<td class="num" style="font-weight:700">
           <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}"
@@ -825,39 +869,23 @@ async function loadCategories(date) {{
         bodyRows += `<tr style="${{rowStyle}}">${{cells}}</tr>`;
       }});
 
-      // Grand Total row
+      // Grand Total row (recalculated based on filter)
       let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">Grand Total</td>`;
       buckets.forEach(b => {{
-        const val = totalsByBucket[b] || 0;
+        const val = filteredTotalsByBucket[b] || 0;
         const encBuck = encodeURIComponent(b);
         totalCells += `<td class="num" style="font-weight:700">
           <a href="/api/download-category-bucket?date=${{currentDate}}&bucket=${{encBuck}}"
              style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
-             title="Download all ${{val}} tickets in ${{b}}"
+             title="Download ${{val}} tickets in ${{b}}"
              target="_blank">${{val.toLocaleString()}}</a>
         </td>`;
       }});
-      totalCells += `<td class="num" style="font-weight:700">
-        <a href="/api/download-category-bucket?date=${{currentDate}}"
-           style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
-           title="Download all ${{grandTotal}} tickets"
-           target="_blank">${{grandTotal.toLocaleString()}}</a>
-      </td>`;
+      totalCells += `<td class="num" style="font-weight:700;color:#1a73e8">${{filteredGrandTotal.toLocaleString()}}</td>`;
 
-      pivotHtml = `
-        <div style="grid-column:1/-1;margin-bottom:12px">
-          <div style="font-size:12px;color:var(--text2);margin-bottom:8px">
-            &#128279; Click any number to download the raw ticket data for that cell
-          </div>
-          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
-            <table style="min-width:100%;border-collapse:collapse">
-              <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
-              <tbody>${{bodyRows}}
-                <tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>
-              </tbody>
-            </table>
-          </div>
-        </div>`;
+      document.getElementById('pivotBody').innerHTML = bodyRows +
+        `<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>`;
+    }};
     }}
 
     // ---- SUMMARY TABLE + CHART (existing) ----
@@ -895,6 +923,9 @@ async function loadCategories(date) {{
     }}
 
     document.getElementById('categoryContent').innerHTML = pivotHtml + summaryHtml + chartHtml;
+
+    // Render pivot table with initial data (all categories)
+    if (window._pivotData) filterPivotTable();
 
     // Render doughnut chart
     if (cats && Object.keys(cats).length > 0) {{
