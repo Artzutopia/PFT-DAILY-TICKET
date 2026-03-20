@@ -10,7 +10,6 @@ from datetime import datetime
 
 # --- Config ---
 DASHBOARD_URL = "https://pft-daily-ticket.vercel.app"
-SECTION_ID = "categorySection"
 SCREENSHOT_PATH = "ticket_bifurcation.png"
 
 SELECTED_CATEGORIES = [
@@ -36,8 +35,8 @@ def take_screenshot():
         page.goto(DASHBOARD_URL, wait_until="networkidle", timeout=60000)
         page.wait_for_timeout(5000)
 
-        section = page.locator(f"#{SECTION_ID}")
-        section.wait_for(state="visible", timeout=30000)
+        # Wait for the pivot table to load
+        page.locator("#pivotTable").wait_for(state="visible", timeout=30000)
 
         # Apply filter
         print(f"[Slack] Applying filter: {SELECTED_CATEGORIES}")
@@ -61,10 +60,38 @@ def take_screenshot():
         }}""")
         page.wait_for_timeout(1000)
 
-        section.scroll_into_view_if_needed()
+        # Screenshot only the header + pivot table (not the summary/chart below)
+        # We select the section header and the pivot table wrapper together
+        pivot_area = page.locator("#categorySection .section-header, #pivotTable")
+
+        # Use JavaScript to create a wrapper around just the parts we want
+        page.evaluate("""() => {
+            const section = document.getElementById('categorySection');
+            const header = section.querySelector('.section-header');
+            const tableWrapper = document.getElementById('pivotTable').closest('div[style*="overflow"]') || document.getElementById('pivotTable');
+            const hint = section.querySelector('p');
+
+            // Create a temporary div with just the header + table
+            const tempDiv = document.createElement('div');
+            tempDiv.id = 'screenshotArea';
+            tempDiv.style.background = 'white';
+            tempDiv.style.padding = '20px';
+            tempDiv.style.borderRadius = '12px';
+            tempDiv.style.border = '1px solid #e2e8f0';
+
+            tempDiv.appendChild(header.cloneNode(true));
+            tempDiv.appendChild(tableWrapper.cloneNode(true));
+            if (hint) tempDiv.appendChild(hint.cloneNode(true));
+
+            document.body.appendChild(tempDiv);
+        }""")
         page.wait_for_timeout(500)
 
-        section.screenshot(path=SCREENSHOT_PATH)
+        screenshot_area = page.locator("#screenshotArea")
+        screenshot_area.scroll_into_view_if_needed()
+        page.wait_for_timeout(300)
+
+        screenshot_area.screenshot(path=SCREENSHOT_PATH)
         browser.close()
 
     print(f"[Slack] Screenshot saved: {SCREENSHOT_PATH}")
