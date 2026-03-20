@@ -576,8 +576,9 @@ def generate_dashboard_html():
 
 <!-- Category Bifurcation (All Ticket Types from Email) -->
 <div class="section" id="categorySection">
-  <div class="section-header">
+  <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
     <h3>&#128202; Ticket Bifurcation — All Categories from Email Report</h3>
+    <div id="pivotFilterContainer"></div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="categoryContent">
     <div class="loading">Loading...</div>
@@ -775,43 +776,56 @@ async function loadCategories(date) {{
 
       const buckets = pivot.buckets;
 
-      // Build checkbox filter
-      let checkboxes = pivot.categories.map(cat => {{
+      // Build multi-select dropdown options
+      let dropdownItems = pivot.categories.map(cat => {{
         const color = CAT_COLORS[cat] || '#94a3b8';
-        const isInternet = cat === 'Internet Issues';
-        return `<label style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;border:1.5px solid ${{color}};cursor:pointer;font-size:11px;font-weight:${{isInternet?'700':'500'}};background:${{isInternet?'#eff6ff':'#fff'}};white-space:nowrap;user-select:none;transition:all .15s"
-          onmouseover="this.style.boxShadow='0 1px 4px rgba(0,0,0,.12)'" onmouseout="this.style.boxShadow='none'">
+        return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;transition:background .1s"
+          onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
           <input type="checkbox" checked data-cat="${{cat}}" onchange="filterPivotTable()"
-            style="accent-color:${{color}};width:13px;height:13px;cursor:pointer">
-          <span class="dot" style="background:${{color}};width:8px;height:8px;border-radius:50%;display:inline-block"></span>
+            style="accent-color:${{color}};width:14px;height:14px;cursor:pointer">
+          <span style="width:8px;height:8px;border-radius:50%;background:${{color}};display:inline-block;flex-shrink:0"></span>
           ${{cat}}
         </label>`;
       }}).join('');
 
       pivotHtml = `
         <div style="grid-column:1/-1;margin-bottom:12px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-            <div style="font-size:12px;color:var(--text2)">
-              &#128279; Click any number to download the raw ticket data for that cell
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;padding:8px 12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px">
-            <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.3px;margin-right:4px">Filter:</span>
-            ${{checkboxes}}
-            <div style="margin-left:auto;display:flex;gap:6px">
-              <button onclick="document.querySelectorAll('#pivotFilterBar input[type=checkbox]').forEach(c=>c.checked=true);filterPivotTable()"
-                class="btn" style="padding:3px 10px;font-size:10px;font-weight:600">Select All</button>
-              <button onclick="document.querySelectorAll('#pivotFilterBar input[type=checkbox]').forEach(c=>c.checked=false);filterPivotTable()"
-                class="btn" style="padding:3px 10px;font-size:10px;font-weight:600">Deselect All</button>
-            </div>
-          </div>
           <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
             <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
               <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
               <tbody id="pivotBody"></tbody>
             </table>
           </div>
+          <div style="font-size:11px;color:var(--text2);margin-top:6px">
+            &#128279; Click any number to download the raw ticket data for that cell
+          </div>
         </div>`;
+
+      // Store dropdown HTML globally so section header can use it
+      window._pivotFilterDropdown = `
+        <div style="position:relative;display:inline-block" id="pivotFilterWrap">
+          <button onclick="var d=document.getElementById('pivotDropdown');d.style.display=d.style.display==='none'?'block':'none'"
+            style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:6px">
+            &#9776; Filter Categories <span style="font-size:10px;color:#64748b" id="pivotFilterCount">(${{pivot.categories.length}}/${{pivot.categories.length}})</span>
+            <span style="font-size:9px">&#9660;</span>
+          </button>
+          <div id="pivotDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:50;min-width:280px;max-height:320px;overflow-y:auto">
+            <div style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #e2e8f0;position:sticky;top:0;background:#fff;z-index:1">
+              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=true);filterPivotTable()"
+                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Select All</button>
+              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=false);filterPivotTable()"
+                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Deselect All</button>
+            </div>
+            ${{dropdownItems}}
+          </div>
+        </div>`;
+
+      // Close dropdown when clicking outside
+      document.addEventListener('click', function(e) {{
+        const wrap = document.getElementById('pivotFilterWrap');
+        const dd = document.getElementById('pivotDropdown');
+        if (wrap && dd && !wrap.contains(e.target)) dd.style.display = 'none';
+      }});
     }}
 
     // Pivot filter + render function
@@ -824,8 +838,12 @@ async function loadCategories(date) {{
       const totalsByCat = pivot.totals_by_cat;
 
       // Determine which categories to show from checked checkboxes
-      const checked = Array.from(document.querySelectorAll('input[data-cat]:checked')).map(c => c.dataset.cat);
+      const checked = Array.from(document.querySelectorAll('#pivotDropdown input[data-cat]:checked')).map(c => c.dataset.cat);
       const catsToShow = checked.length > 0 ? pivot.categories.filter(c => checked.includes(c)) : [];
+
+      // Update filter count badge
+      const countEl = document.getElementById('pivotFilterCount');
+      if (countEl) countEl.textContent = `(${{checked.length}}/${{pivot.categories.length}})`;
 
       if (catsToShow.length === 0) {{
         document.getElementById('pivotHead').innerHTML = '';
@@ -939,8 +957,12 @@ async function loadCategories(date) {{
 
     document.getElementById('categoryContent').innerHTML = pivotHtml + summaryHtml + chartHtml;
 
-    // Render pivot table with initial data (all categories)
-    if (window._pivotData) filterPivotTable();
+    // Render pivot table and inject filter dropdown into section header
+    if (window._pivotData) {{
+      const fc = document.getElementById('pivotFilterContainer');
+      if (fc && window._pivotFilterDropdown) fc.innerHTML = window._pivotFilterDropdown;
+      filterPivotTable();
+    }}
 
     // Render doughnut chart
     if (cats && Object.keys(cats).length > 0) {{
