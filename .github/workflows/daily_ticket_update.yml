@@ -20,7 +20,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install openpyxl
+        run: pip install openpyxl requests
 
       - name: Run daily agent
         env:
@@ -37,3 +37,33 @@ jobs:
           # Only commit if there are changes
           git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $(date -u +%Y-%m-%d)"
           git push
+
+      # Wait for Vercel to deploy the updated dashboard
+      - name: Wait for Vercel deployment
+        run: |
+          echo "Waiting 60 seconds for Vercel to deploy..."
+          sleep 60
+
+      # Take screenshot and post to Slack
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Screenshot and post to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        run: python slack_screenshot.py
+
+      # Notify on failure
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":":x: *PFT Daily Update Failed — '"$(date -u +%Y-%m-%d)"'*\n\nPlease run manually via Claude Code."}' \
+            $SLACK_WEBHOOK_URL
