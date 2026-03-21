@@ -210,7 +210,13 @@ def main():
             from history_db import save_daily_snapshot, save_master_snapshot, get_tickets_for_date
             report_date = datetime.now(IST).strftime("%Y-%m-%d")
             report_time = datetime.now(IST).replace(hour=10, minute=10, second=0, microsecond=0)
-            save_daily_snapshot(output_path, report_date, report_time)
+            # Count total tickets in full report for total_pending
+            import openpyxl as _opx_count
+            _wb_count = _opx_count.load_workbook(report_path, read_only=True)
+            _ws_count = _wb_count.active
+            _total = sum(1 for _ in _ws_count.iter_rows(min_row=2))
+            _wb_count.close()
+            save_daily_snapshot(output_path, report_date, report_time, total_pending=_total)
             log("History database updated.")
         except Exception as e:
             log(f"Warning: Could not save to history DB: {e}")
@@ -236,6 +242,19 @@ def main():
             log("Saving full report tickets for pivot table...")
             full_count = save_full_report(report_path, report_date, report_time)
             log(f"Full report: {full_count} tickets saved to database")
+
+            # Update total_pending in daily_summary with full report count
+            try:
+                import sqlite3 as _sql
+                _db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ticket_history.db")
+                _conn = _sql.connect(_db_path)
+                _conn.execute("UPDATE daily_summary SET total_pending = ? WHERE report_date = ? AND (total_pending IS NULL OR total_pending = 0)",
+                              (full_count, report_date))
+                _conn.commit()
+                _conn.close()
+                log(f"Updated total_pending = {full_count} for {report_date}")
+            except Exception as _e:
+                log(f"Warning: Could not update total_pending: {_e}")
         except Exception as e:
             log(f"Warning: Could not save categories/full report: {e}")
 
