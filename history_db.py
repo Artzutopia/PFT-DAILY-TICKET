@@ -124,12 +124,19 @@ def init_db():
             disposition_l1 TEXT,
             disposition_l2 TEXT,
             disposition_l3 TEXT,
+            disposition_l4 TEXT,
             UNIQUE(report_date, ticket_no)
         )
     """)
+    # Add disposition_l4 column if it doesn't exist (migration for existing DBs)
+    try:
+        c.execute("ALTER TABLE full_report_history ADD COLUMN disposition_l4 TEXT")
+    except Exception:
+        pass  # Column already exists
     c.execute("CREATE INDEX IF NOT EXISTS idx_full_date ON full_report_history(report_date)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_full_l3 ON full_report_history(report_date, disposition_l3)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_full_l3_bucket ON full_report_history(report_date, disposition_l3, aging_bucket)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_full_l4 ON full_report_history(report_date, disposition_l3, disposition_l4)")
 
     # Agent attendance table
     c.execute("""
@@ -465,6 +472,7 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
             str(row[col.get("Disposition Folder Level 1", 39)] or "").strip(),
             str(row[col.get("Disposition Folder Level 2", 40)] or "").strip(),
             str(row[col.get("Disposition Folder Level 3", 41)] or "").strip(),
+            str(row[col.get("Disposition Folder Level 4", 42)] or "").strip(),
         )
         tickets.append(ticket)
 
@@ -475,8 +483,8 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
         (report_date, ticket_no, created_date, created_time, pending_hours,
          aging_bucket, pending_days, current_queue, sub_status, status,
          zone, mapped_partner, city, customer_name, device_id, channel_partner,
-         disposition_l1, disposition_l2, disposition_l3)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         disposition_l1, disposition_l2, disposition_l3, disposition_l4)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, tickets)
 
     conn.commit()
@@ -758,6 +766,88 @@ def get_category_daily_trend(date_from, date_to):
         "dates": dates,
         "categories": categories,
     }
+
+
+def get_category_l4_daily_trend(date_from, date_to, l3_category):
+    """Return L4 breakdown for a specific L3 category across a date range.
+    Returns: {
+        'dates': ['2026-03-18', '2026-03-19', ...],
+        'l4_categories': {
+            'L4 Name': {'2026-03-18': 50, '2026-03-19': 60, ...},
+            ...
+        },
+        'l3_totals': {'2026-03-18': 1244, ...}
+    }
+    """
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Get dates in range
+    c.execute("""
+        SELECT DISTINCT report_date FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date ASC
+    """, (date_from, date_to))
+    dates = [r["report_date"] for r in c.fetchall()]
+
+    # Get L3 totals per date
+    c.execute("""
+        SELECT report_date, COUNT(*) as cnt
+        FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ? AND disposition_l3 = ?
+        GROUP BY report_date
+    """, (date_from, date_to, l3_category))
+    l3_totals = {r["report_date"]: r["cnt"] for r in c.fetchall()}
+
+    # Get L4 breakdown per date
+    c.execute("""
+        SELECT report_date, COALESCE(disposition_l4, '') as l4, COUNT(*) as cnt
+        FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ? AND disposition_l3 = ?
+        GROUP BY report_date, disposition_l4
+        ORDER BY cnt DESC
+    """, (date_from, date_to, l3_category))
+
+    l4_categories = {}
+    for r in c.fetchall():
+        l4_name = r["l4"] if r["l4"] else "(No L4)"
+        if l4_name not in l4_categories:
+            l4_categories[l4_name] = {}
+        l4_categories[l4_name][r["report_date"]] = r["cnt"]
+
+    conn.close()
+    return {
+        "dates": dates,
+        "l4_categories": l4_categories,
+        "l3_totals": l3_totals,
+    }
+
+
+def get_tickets_for_download(report_date_str, l3_category=None, l4_category=None):
+    """Get raw tickets for download, optionally filtered by L3 and/or L4 category."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    query = "SELECT * FROM full_report_history WHERE report_date = ?"
+    params = [report_date_str]
+
+    if l3_category:
+        query += " AND disposition_l3 = ?"
+        params.append(l3_category)
+
+    if l4_category:
+        if l4_category == "(No L4)":
+            query += " AND (disposition_l4 IS NULL OR disposition_l4 = '')"
+        else:
+            query += " AND disposition_l4 = ?"
+            params.append(l4_category)
+
+    query += " ORDER BY pending_hours DESC"
+    c.execute(query, params)
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
 
 
 def get_daily_summary(report_date):

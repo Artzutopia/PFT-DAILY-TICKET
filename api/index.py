@@ -31,6 +31,8 @@ from history_db import (
     get_category_aging_pivot_range,
     get_category_breakdown_range,
     get_category_daily_trend,
+    get_category_l4_daily_trend,
+    get_tickets_for_download,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -369,6 +371,30 @@ def api_category_daily_trend():
     if date_from and date_to:
         return jsonify(get_category_daily_trend(date_from, date_to))
     return jsonify({"error": "from and to required"}), 400
+
+
+@app.route("/api/category-l4-trend")
+def api_category_l4_trend():
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    l3 = request.args.get("l3")
+    if date_from and date_to and l3:
+        return jsonify(get_category_l4_daily_trend(date_from, date_to, l3))
+    return jsonify({"error": "from, to and l3 required"}), 400
+
+
+@app.route("/api/download-category-tickets")
+def api_download_category_tickets():
+    date = request.args.get("date")
+    l3 = request.args.get("l3")
+    l4 = request.args.get("l4")
+    if date:
+        tickets = get_tickets_for_download(date, l3, l4)
+        parts = [date, (l3 or "all").replace(" ", "_")]
+        if l4:
+            parts.append(l4.replace(" ", "_"))
+        return make_csv_response(tickets, f"tickets_{'_'.join(parts)}.csv")
+    return jsonify({"error": "date required"}), 400
 
 
 # ========== AGENT ROUTES ==========

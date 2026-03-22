@@ -35,6 +35,8 @@ from history_db import (
     get_category_aging_pivot_range,
     get_category_breakdown_range,
     get_category_daily_trend,
+    get_category_l4_daily_trend,
+    get_tickets_for_download,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -365,6 +367,38 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(trend)
             else:
                 self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/category-l4-trend":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            l3 = params.get("l3", [None])[0]
+            if date_from and date_to and l3:
+                self.send_json(get_category_l4_daily_trend(date_from, date_to, l3))
+            else:
+                self.send_json({"error": "from, to and l3 required"}, 400)
+        elif path == "/api/download-category-tickets":
+            date = params.get("date", [None])[0]
+            l3 = params.get("l3", [None])[0]
+            l4 = params.get("l4", [None])[0]
+            if date:
+                tickets = get_tickets_for_download(date, l3, l4)
+                import csv as csv_mod
+                import io as io_mod
+                output = io_mod.StringIO()
+                if tickets:
+                    writer = csv_mod.DictWriter(output, fieldnames=tickets[0].keys())
+                    writer.writeheader()
+                    writer.writerows(tickets)
+                parts = [date, (l3 or "all").replace(" ", "_")]
+                if l4:
+                    parts.append(l4.replace(" ", "_"))
+                fname = f"tickets_{'_'.join(parts)}.csv"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.end_headers()
+                self.wfile.write(output.getvalue().encode())
+            else:
+                self.send_json({"error": "date required"}, 400)
         # ---- Agent Dashboard APIs ----
         elif path == "/agent":
             self.send_response(200)
@@ -539,7 +573,7 @@ def generate_dashboard_html():
   th:hover{{color:var(--accent)}}
   td{{padding:10px 12px;border-bottom:1px solid var(--border)}}
   tr:hover{{background:#f0f7ff}}
-  .num{{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}}
+  .num{{text-align:center;font-variant-numeric:tabular-nums;font-weight:600}}
   .total{{font-weight:700;color:var(--accent)}}
   .dot{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}}
   .bar-bg{{background:var(--card2);border-radius:4px;height:18px;width:100%;overflow:hidden}}
@@ -1330,8 +1364,10 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
       const color = CAT_COLORS[cat] || '#94a3b8';
       const isInternet = cat === 'Internet Issues';
       const rowStyle = isInternet ? 'background:#eff6ff;font-weight:700' : '';
+      const catId = cat.replace(/[^a-zA-Z0-9]/g, '_');
 
-      let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1;white-space:nowrap">
+      let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1;white-space:nowrap;cursor:pointer" onclick="toggleL4('${{catId}}','${{cat.replace(/'/g, "\\\\'")}}')">
+        <span id="arrow_${{catId}}" style="display:inline-block;width:14px;font-size:10px;transition:transform 0.2s">&#9654;</span>
         <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
       </td>`;
 
@@ -1339,10 +1375,13 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
         const count = categories[cat][d] || 0;
         const total = dailyTotals[d] || 1;
         const pct = (count / total * 100).toFixed(1);
-        cells += `<td class="num" style="font-size:11px">${{count > 0 ? pct + '%' : '—'}}</td>`;
+        const dlUrl = `/api/download-category-tickets?date=${{d}}&l3=${{encodeURIComponent(cat)}}`;
+        cells += `<td class="num" style="font-size:11px;cursor:pointer" title="Click to download ${{cat}} tickets for ${{d}}" onclick="window.location.href='${{dlUrl}}'">${{count > 0 ? pct + '%' : '—'}}</td>`;
       }});
 
-      bodyRows += `<tr style="${{rowStyle}}">${{cells}}</tr>`;
+      bodyRows += `<tr data-catrow="${{catId}}" style="${{rowStyle}}">${{cells}}</tr>`;
+      // Placeholder for L4 sub-rows (inserted dynamically)
+      bodyRows += `<!-- L4_PLACEHOLDER_${{catId}} -->`;
     }});
 
     // TOTAL row with actual numbers
@@ -1411,6 +1450,88 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
   }}
 }}
 
+// Toggle L4 sub-rows for a category
+window._l4Expanded = {{}};
+async function toggleL4(catId, catName) {{
+  const table = document.querySelector('#categorySummaryContent table tbody');
+  if (!table) return;
+  const arrow = document.getElementById('arrow_' + catId);
+
+  // If already expanded, collapse
+  if (window._l4Expanded[catId]) {{
+    table.querySelectorAll(`tr[data-l4parent="${{catId}}"]`).forEach(r => r.remove());
+    window._l4Expanded[catId] = false;
+    if (arrow) arrow.style.transform = 'rotate(0deg)';
+    return;
+  }}
+
+  // Fetch L4 data
+  const fromDate = document.getElementById('catTrendFrom').value;
+  const toDate = document.getElementById('catTrendTo').value;
+  if (!fromDate || !toDate) return;
+
+  try {{
+    const data = await api(`/api/category-l4-trend?from=${{fromDate}}&to=${{toDate}}&l3=${{encodeURIComponent(catName)}}`);
+    if (!data || !data.l4_categories) return;
+
+    const dates = window._catTrendDates || data.dates;
+    const l4Cats = data.l4_categories;
+    const l3Totals = data.l3_totals || {{}};
+
+    // Sort L4 categories by total count descending
+    const l4Names = Object.keys(l4Cats);
+    l4Names.sort((a, b) => {{
+      const totalA = dates.reduce((s, d) => s + (l4Cats[a][d] || 0), 0);
+      const totalB = dates.reduce((s, d) => s + (l4Cats[b][d] || 0), 0);
+      return totalB - totalA;
+    }});
+
+    // Find the parent row to insert after
+    const parentRow = table.querySelector(`tr[data-catrow="${{catId}}"]`);
+    if (!parentRow) return;
+
+    // Build L4 sub-rows
+    l4Names.forEach(l4Name => {{
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-l4parent', catId);
+      tr.style.cssText = 'background:#fafbfc;font-size:11px;';
+
+      let tdName = document.createElement('td');
+      tdName.style.cssText = 'position:sticky;left:0;background:#fafbfc;z-index:1;white-space:nowrap;padding-left:40px;color:#64748b;font-size:11px';
+      tdName.textContent = '└ ' + l4Name;
+      tr.appendChild(tdName);
+
+      dates.forEach(d => {{
+        const count = l4Cats[l4Name][d] || 0;
+        const l3Total = l3Totals[d] || 1;
+        const pct = l3Total > 0 ? (count / l3Total * 100).toFixed(1) : '0.0';
+        const td = document.createElement('td');
+        td.className = 'num';
+        td.style.cssText = 'font-size:10px;color:#64748b;cursor:pointer';
+        td.textContent = count > 0 ? pct + '%' : '—';
+        td.title = `${{count}} of ${{l3Total}} ${{catName}} tickets (${{l4Name}}) on ${{d}} — Click to download`;
+        td.onclick = function() {{
+          window.location.href = `/api/download-category-tickets?date=${{d}}&l3=${{encodeURIComponent(catName)}}&l4=${{encodeURIComponent(l4Name)}}`;
+        }};
+        tr.appendChild(td);
+      }});
+
+      parentRow.after(tr);
+      // Insert in order: we need to insert after the last L4 row
+      const existingL4 = table.querySelectorAll(`tr[data-l4parent="${{catId}}"]`);
+      const lastL4 = existingL4[existingL4.length - 1];
+      if (lastL4 && lastL4 !== tr) {{
+        lastL4.after(tr);
+      }}
+    }});
+
+    window._l4Expanded[catId] = true;
+    if (arrow) arrow.style.transform = 'rotate(90deg)';
+  }} catch(e) {{
+    console.error('Failed to load L4 data:', e);
+  }}
+}}
+
 // Show/hide category rows and recalculate totals
 window.filterCatTrend = function() {{
   const checked = Array.from(document.querySelectorAll('#catTrendDropdown input[data-cattrend]:checked')).map(c => c.getAttribute('data-cattrend'));
@@ -1425,9 +1546,27 @@ window.filterCatTrend = function() {{
   rows.forEach(row => {{
     const firstTd = row.querySelector('td');
     if (!firstTd) return;
-    const text = firstTd.textContent.trim().replace(' ★', '');
+    const text = firstTd.textContent.trim().replace(' ★', '').replace(/^[►▶]\s*/, '');
     if (text === 'TOTAL') {{
       totalRow = row;
+      return;
+    }}
+    // Handle L4 sub-rows
+    const l4Parent = row.getAttribute('data-l4parent');
+    if (l4Parent) {{
+      // Show/hide L4 rows based on parent category visibility
+      const parentCatRow = table.querySelector(`tr[data-catrow="${{l4Parent}}"]`);
+      if (parentCatRow) {{
+        const parentText = parentCatRow.querySelector('td').textContent.trim().replace(' ★', '').replace(/^[►▶]\s*/, '');
+        row.style.display = checked.includes(parentText) ? '' : 'none';
+      }}
+      return;
+    }}
+    const catRow = row.getAttribute('data-catrow');
+    if (catRow) {{
+      // Get clean category name from the text content (skip arrow + dot)
+      const cleanText = firstTd.textContent.trim().replace(' ★', '').replace(/^[►▶]\s*/, '');
+      row.style.display = checked.includes(cleanText) ? '' : 'none';
       return;
     }}
     row.style.display = checked.includes(text) ? '' : 'none';
@@ -1450,9 +1589,10 @@ window.filterCatTrend = function() {{
     // Also recalculate % for visible rows based on filtered totals
     rows.forEach(row => {{
       if (row === totalRow || row.style.display === 'none') return;
+      if (row.getAttribute('data-l4parent')) return; // Skip L4 sub-rows
       const firstTd = row.querySelector('td');
       if (!firstTd) return;
-      const cat = firstTd.textContent.trim().replace(' ★', '');
+      const cat = firstTd.textContent.trim().replace(' ★', '').replace(/^[►▶]\s*/, '');
       const cells = row.querySelectorAll('td');
       dates.forEach((d, i) => {{
         const count = (categories[cat] && categories[cat][d]) || 0;
