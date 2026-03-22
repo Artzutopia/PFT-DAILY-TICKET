@@ -469,7 +469,7 @@ def generate_dashboard_html():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PFT Internet Issues Dashboard</title>
+<title>PFT Daily Ticket Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -634,7 +634,7 @@ def generate_dashboard_html():
 <body>
 
 <div class="header">
-  <h1><span>PFT</span> Internet Issues Dashboard</h1>
+  <h1><span>PFT</span> Daily Ticket Tracker</h1>
   <div class="header-right">
     <a href="/agent" class="btn btn-primary" style="background:#7c3aed;border-color:#7c3aed">&#128101; Agent Dashboard</a>
     <a href="{MASTER_SHEET_URL}" target="_blank" class="btn btn-primary">&#128196; Master Sheet</a>
