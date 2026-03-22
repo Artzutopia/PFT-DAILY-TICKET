@@ -46,8 +46,8 @@ jobs:
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
-          MAX_ATTEMPTS=7
-          WAIT_SECONDS=900
+          MAX_ATTEMPTS=21
+          WAIT_SECONDS=300
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             echo ""
             echo "=========================================="
@@ -61,7 +61,7 @@ jobs:
               echo ""
               echo "Email not found yet on attempt $attempt."
               if [ $attempt -lt $MAX_ATTEMPTS ]; then
-                echo "Waiting 15 minutes before next try..."
+                echo "Waiting 5 minutes before next try..."
                 sleep $WAIT_SECONDS
               fi
             fi
