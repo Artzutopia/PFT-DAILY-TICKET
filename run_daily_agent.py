@@ -284,10 +284,10 @@ def main():
         except Exception as e:
             log(f"Warning: Could not snapshot master sheet: {e}")
 
-        # Step 7: Cleanup data older than 90 days
+        # Step 7: Cleanup old data (tickets: 30 days, summaries: 90 days)
         try:
             from history_db import cleanup_old_data
-            cleanup_old_data(retention_days=90)
+            cleanup_old_data()
         except Exception as e:
             log(f"Warning: Could not cleanup old data: {e}")
     else:

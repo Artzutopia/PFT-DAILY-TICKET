@@ -503,30 +503,35 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
     return total_count
 
 
-def cleanup_old_data(retention_days=90):
+def cleanup_old_data():
     """
-    Remove data older than retention_days to keep the database small.
-    Runs automatically after each daily save.
+    Remove old data to keep the database small. Runs after each daily save.
+    - Ticket-level data (full_report_history, ticket_history): 30 days
+    - Daily summary numbers (daily_summary): 90 days
     """
     conn = get_connection()
     c = conn.cursor()
-    cutoff = (datetime.now(IST) - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+    cutoff_30 = (datetime.now(IST) - timedelta(days=30)).strftime("%Y-%m-%d")
+    cutoff_90 = (datetime.now(IST) - timedelta(days=90)).strftime("%Y-%m-%d")
 
-    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff,))
+    # Ticket-level data: keep 30 days
+    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_30,))
     del_full = c.rowcount
-    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff,))
+    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_30,))
     del_tickets = c.rowcount
-    c.execute("DELETE FROM daily_summary WHERE report_date < ?", (cutoff,))
+
+    # Daily summary numbers: keep 90 days
+    c.execute("DELETE FROM daily_summary WHERE report_date < ?", (cutoff_90,))
     del_summary = c.rowcount
 
     total_deleted = del_full + del_tickets + del_summary
     if total_deleted > 0:
         conn.commit()
         conn.execute("VACUUM")
-        print(f"[Cleanup] Removed {total_deleted} rows older than {cutoff} ({retention_days} days)")
+        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows (>30d) + {del_summary} summary rows (>90d)")
     else:
         conn.commit()
-        print(f"[Cleanup] No old data to remove (cutoff: {cutoff})")
+        print(f"[Cleanup] No old data to remove (tickets cutoff: {cutoff_30}, summary cutoff: {cutoff_90})")
     conn.close()
 
 
