@@ -560,8 +560,8 @@ def generate_dashboard_html():
   .card-value{{font-size:22px;font-weight:700;letter-spacing:-0.5px}}
   .card-value.green{{color:var(--green)}} .card-value.red{{color:var(--red)}}
   .card-value.orange{{color:var(--orange)}} .card-value.blue{{color:var(--accent)}}
-  .card-sub{{font-size:9px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-  .card-delta{{font-size:9px;margin-top:2px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+  .card-sub{{font-size:9px;color:var(--text2);margin-top:2px}}
+  .card-delta{{font-size:9px;margin-top:2px;font-weight:600}}
   .card-delta.up{{color:var(--red)}} .card-delta.down{{color:var(--green)}} .card-delta.neutral{{color:var(--text2)}}
 
   .section{{background:var(--card);border-radius:10px;padding:18px;border:1px solid var(--border);margin-bottom:18px;
@@ -1849,12 +1849,10 @@ function delta(curr, prev, key, invert=false) {{
   const prevAvg = prev[key] / prevDays;
   const diff = Math.round(currAvg - prevAvg);
   let vsLabel = 'vs prev day';
-  if (currentPeriodType === 'week') vsLabel = 'vs prev wk avg/day';
-  else if (currentPeriodType === 'month') vsLabel = 'vs prev month avg/day';
-  else if (currentPeriodType === 'period' || currentRangeMode) vsLabel = 'vs prev period avg/day';
-  // For single day, simplify label
-  if (currDays === 1 && prevDays === 1) {{
-    vsLabel = 'vs prev day';
+  if (currDays > 1 || prevDays > 1) {{
+    if (currentPeriodType === 'week') vsLabel = 'vs prev wk';
+    else if (currentPeriodType === 'month') vsLabel = 'vs prev month';
+    else vsLabel = 'vs prev period';
   }}
   if (diff === 0) return `<div class="card-delta neutral">&mdash; No change ${{vsLabel}}</div>`;
   const arrow = diff > 0 ? '&#9650;' : '&#9660;';
