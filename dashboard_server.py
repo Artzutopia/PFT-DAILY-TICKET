@@ -720,6 +720,14 @@ def generate_dashboard_html():
     <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
     <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
   </div>
+  <div id="aggModeBar" style="display:none;padding:6px 12px 2px;margin-bottom:2px">
+    <span style="font-size:10px;font-weight:600;color:var(--text2);margin-right:8px">SHOW AS:</span>
+    <button class="date-btn agg-btn active" data-agg="avg" onclick="setAggMode('avg',this)">Average</button>
+    <button class="date-btn agg-btn" data-agg="sum" onclick="setAggMode('sum',this)">Sum</button>
+    <button class="date-btn agg-btn" data-agg="median" onclick="setAggMode('median',this)">Median</button>
+    <button class="date-btn agg-btn" data-agg="min" onclick="setAggMode('min',this)">Min</button>
+    <button class="date-btn agg-btn" data-agg="max" onclick="setAggMode('max',this)">Max</button>
+  </div>
   <div class="cards" id="summaryCards"><div class="loading">Loading...</div></div>
 </div>
 </div>
@@ -1857,49 +1865,84 @@ function delta(curr, prev, key, invert=false) {{
 }}
 
 // ========== SUMMARY CARDS ==========
+let currentAggMode = 'avg';
+let lastSummaryData = null;
+
+function setAggMode(mode, btn) {{
+  currentAggMode = mode;
+  document.querySelectorAll('.agg-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (lastSummaryData) renderSummary(lastSummaryData);
+}}
+
+function calcAgg(s, key) {{
+  const days = s.num_days || 1;
+  if (days <= 1) return s[key] || 0;
+  const dv = s.daily_values;
+  if (!dv || !dv[key]) return Math.round((s[key] || 0) / days);
+  const arr = dv[key].map(x => x || 0).sort((a, b) => a - b);
+  switch (currentAggMode) {{
+    case 'sum': return s[key] || 0;
+    case 'avg': return Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+    case 'median':
+      const mid = Math.floor(arr.length / 2);
+      return arr.length % 2 ? arr[mid] : Math.round((arr[mid - 1] + arr[mid]) / 2);
+    case 'min': return arr[0];
+    case 'max': return arr[arr.length - 1];
+    default: return Math.round((s[key] || 0) / days);
+  }}
+}}
+
 function renderSummary(s) {{
+  lastSummaryData = s;
   const days = s.num_days || 1;
   const isMulti = days > 1;
-  // For multi-day: show per-day average; for single day: show actual
-  const v = (val) => isMulti ? Math.round((val || 0) / days) : (val || 0);
-  const pct48 = v(s.total_internet) ? Math.round(v(s.critical_gt48h)/v(s.total_internet)*100) : 0;
-  const pctInternet = v(s.total_pending) ? (v(s.total_internet)/v(s.total_pending)*100).toFixed(1) : 0;
-  const avgLabel = isMulti ? `<span style="font-size:9px;color:#888;font-weight:400"> avg/day</span>` : '';
-  const subNote = isMulti ? `Avg per day (${{days}} days)` : '';
+
+  // Show/hide aggregation mode bar
+  document.getElementById('aggModeBar').style.display = isMulti ? '' : 'none';
+
+  const v = (key) => isMulti ? calcAgg(s, key) : (s[key] || 0);
+  const pct48 = v('total_internet') ? Math.round(v('critical_gt48h')/v('total_internet')*100) : 0;
+  const pctInternet = v('total_pending') ? (v('total_internet')/v('total_pending')*100).toFixed(1) : 0;
+
+  const modeLabels = {{ avg: 'avg/day', sum: 'total', median: 'median', min: 'min', max: 'max' }};
+  const modeLabel = isMulti ? `<span style="font-size:9px;color:#888;font-weight:400"> ${{modeLabels[currentAggMode]}}</span>` : '';
+  const subNote = isMulti ? `${{modeLabels[currentAggMode].charAt(0).toUpperCase() + modeLabels[currentAggMode].slice(1)}} (${{days}} days)` : '';
+
   document.getElementById('summaryCards').innerHTML = `
     <div class="card" style="border-left:3px solid var(--text2)">
       <div class="card-label">Total Pending Tickets</div>
-      <div class="card-value" style="color:#1a1a2e">${{v(s.total_pending).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value" style="color:#1a1a2e">${{v('total_pending').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{isMulti ? subNote : 'All pending tickets received'}}</div>
       ${{delta(s, prevSummary, 'total_pending')}}</div>
     <div class="card" style="border-left:3px solid var(--accent)">
       <div class="card-label">Internet Issue Tickets</div>
-      <div class="card-value blue">${{v(s.total_internet).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value blue">${{v('total_internet').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{pctInternet}}% of total pending</div>
       ${{delta(s, prevSummary, 'total_internet')}}</div>
     <div class="card" style="border-left:3px solid var(--green)">
       <div class="card-label">Created on Report Day</div>
-      <div class="card-value green">${{v(s.created_today).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value green">${{v('created_today').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{isMulti ? subNote : 'New tickets that day'}}</div>
       ${{delta(s, prevSummary, 'created_today')}}</div>
     <div class="card" style="border-left:3px solid var(--red)">
       <div class="card-label">Critical (&gt; 48h)</div>
-      <div class="card-value red">${{v(s.critical_gt48h).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value red">${{v('critical_gt48h').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{pct48}}% of internet tickets</div>
       ${{delta(s, prevSummary, 'critical_gt48h')}}</div>
     <div class="card" style="border-left:3px solid var(--orange)">
       <div class="card-label">Partner Queue</div>
-      <div class="card-value orange">${{v(s.queue_partner).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value orange">${{v('queue_partner').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{isMulti ? subNote : 'Waiting on partner'}}</div>
       ${{delta(s, prevSummary, 'queue_partner')}}</div>
     <div class="card" style="border-left:3px solid #a855f7">
       <div class="card-label">CX High Pain</div>
-      <div class="card-value" style="color:#a855f7">${{v(s.queue_cx_high_pain).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value" style="color:#a855f7">${{v('queue_cx_high_pain').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{isMulti ? subNote : 'Escalated'}}</div>
       ${{delta(s, prevSummary, 'queue_cx_high_pain')}}</div>
     <div class="card" style="border-left:3px solid #06b6d4">
       <div class="card-label">PX-Send to Wiom</div>
-      <div class="card-value" style="color:#06b6d4">${{v(s.queue_px_send_wiom).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-value" style="color:#06b6d4">${{v('queue_px_send_wiom').toLocaleString()}}${{modeLabel}}</div>
       <div class="card-sub">${{isMulti ? subNote : 'Wiom queue'}}</div>
       ${{delta(s, prevSummary, 'queue_px_send_wiom')}}</div>
   `;

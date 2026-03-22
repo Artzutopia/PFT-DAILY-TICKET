@@ -653,11 +653,13 @@ def get_available_dates():
 
 
 def get_summary_range(date_from, date_to):
-    """Get aggregated (summed) summary across a date range.
-    Returns a dict with the same keys as a single daily_summary but summed."""
+    """Get aggregated summary across a date range.
+    Returns sums + per-day arrays for computing avg/median/min/max on frontend."""
     init_db()
     conn = get_connection()
     c = conn.cursor()
+
+    # Get summed values
     c.execute("""
         SELECT
             COUNT(*) as num_days,
@@ -684,10 +686,31 @@ def get_summary_range(date_from, date_to):
         WHERE report_date >= ? AND report_date <= ?
     """, (date_from, date_to))
     row = c.fetchone()
-    conn.close()
     if not row or row["num_days"] == 0:
+        conn.close()
         return None
-    return dict(row)
+    result = dict(row)
+
+    # Get per-day values for frontend aggregation (avg/median/min/max)
+    KEYS = ["total_pending", "total_internet", "created_today", "critical_gt48h",
+            "queue_partner", "queue_cx_high_pain", "queue_px_send_wiom",
+            "bucket_lt4h", "bucket_4_12h", "bucket_12_24h", "bucket_24_36h",
+            "bucket_36_48h", "bucket_48_72h", "bucket_72_120h", "bucket_gt120h"]
+    c.execute(f"""
+        SELECT {', '.join(KEYS)}
+        FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date
+    """, (date_from, date_to))
+    rows = c.fetchall()
+    conn.close()
+
+    daily_values = {}
+    for k in KEYS:
+        daily_values[k] = [dict(r)[k] or 0 for r in rows]
+    result["daily_values"] = daily_values
+
+    return result
 
 
 def get_category_aging_pivot_range(date_from, date_to):
