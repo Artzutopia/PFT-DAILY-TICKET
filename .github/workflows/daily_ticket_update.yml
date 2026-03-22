@@ -1,15 +1,15 @@
 name: Daily PFT Ticket Update
 
-# Starts at 10:15 AM IST, retries every 15 min until email found
+# Starts at 10:15 AM IST, retries every 15 min until email found (max till 4 PM)
 on:
   schedule:
-    - cron: '45 4 * * 1-6'   # Mon-Sat at 10:15 AM IST
+    - cron: '45 4 * * *'   # Every day at 10:15 AM IST (including Sunday)
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
   update-tickets:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # Max 2 hours
+    timeout-minutes: 360  # Max 6 hours (till ~4 PM IST)
 
     steps:
       - name: Checkout repository
@@ -46,7 +46,7 @@ jobs:
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
-          MAX_ATTEMPTS=8
+          MAX_ATTEMPTS=23
           WAIT_SECONDS=900
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             echo ""
@@ -67,7 +67,7 @@ jobs:
             fi
           done
           echo ""
-          echo "FAILED: Email not found after $MAX_ATTEMPTS attempts (2 hours)."
+          echo "FAILED: Email not found after $MAX_ATTEMPTS attempts (till 4 PM IST)."
           exit 1
 
       - name: Commit and push updated database
@@ -117,6 +117,6 @@ jobs:
           today = datetime.now().strftime('%Y-%m-%d')
           resp = requests.post('https://slack.com/api/chat.postMessage',
             headers={'Authorization': f'Bearer {os.environ[\"SLACK_BOT_TOKEN\"]}', 'Content-Type': 'application/json'},
-            json={'channel': os.environ['SLACK_CHANNEL'], 'text': f':x: *PFT Daily Update Failed — {today}*\nEmail not found after 2 hours of retrying.\nPlease run manually via Claude Code.'})
+            json={'channel': os.environ['SLACK_CHANNEL'], 'text': f':x: *PFT Daily Update Failed — {today}*\nEmail not found after retrying till 4 PM IST.\nPlease run manually via Claude Code.'})
           print(resp.json())
           "
