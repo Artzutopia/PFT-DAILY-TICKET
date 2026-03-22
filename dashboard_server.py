@@ -634,7 +634,7 @@ def generate_dashboard_html():
 <body>
 
 <div class="header">
-  <h1><span>PFT</span> Daily Ticket Tracker</h1>
+  <h1><span>PFT</span> Pending Ticket Tracker</h1>
   <div class="header-right">
     <a href="/agent" class="btn btn-primary" style="background:#7c3aed;border-color:#7c3aed">&#128101; Agent Dashboard</a>
     <a href="{MASTER_SHEET_URL}" target="_blank" class="btn btn-primary">&#128196; Master Sheet</a>
