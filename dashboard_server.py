@@ -34,6 +34,7 @@ from history_db import (
     get_summary_range,
     get_category_aging_pivot_range,
     get_category_breakdown_range,
+    get_category_daily_trend,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -354,6 +355,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if date_from and date_to:
                 pivot = get_category_aging_pivot_range(date_from, date_to)
                 self.send_json(pivot)
+            else:
+                self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/category-daily-trend":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                trend = get_category_daily_trend(date_from, date_to)
+                self.send_json(trend)
             else:
                 self.send_json({"error": "from and to required"}, 400)
         # ---- Agent Dashboard APIs ----
@@ -688,7 +697,7 @@ def generate_dashboard_html():
 </div>
 </div>
 
-<!-- Category Summary -->
+<!-- Category Summary — Daily Trend -->
 <div class="dashboard-section" data-section-id="categorySummary" data-section-label="Category Summary" draggable="true">
 <div class="section" id="categorySummarySection">
   <div class="section-toolbar">
@@ -696,27 +705,17 @@ def generate_dashboard_html():
     <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
     <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
   </div>
-  <div class="section-header">
-    <h3>&#128203; Category Summary</h3>
+  <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <h3>&#128202; Category Summary &mdash; Daily Trend</h3>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <label style="font-size:11px;color:var(--text2);font-weight:600">FROM</label>
+      <input type="date" id="catTrendFrom" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
+      <label style="font-size:11px;color:var(--text2);font-weight:600">TO</label>
+      <input type="date" id="catTrendTo" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
+      <button class="btn btn-sm btn-primary" onclick="applyCatTrendFilter()">Apply</button>
+    </div>
   </div>
   <div id="categorySummaryContent">
-    <div class="loading">Loading...</div>
-  </div>
-</div>
-</div>
-
-<!-- Distribution Chart -->
-<div class="dashboard-section" data-section-id="distributionChart" data-section-label="Distribution Chart" draggable="true">
-<div class="section" id="distributionChartSection">
-  <div class="section-toolbar">
-    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
-    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
-    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
-  </div>
-  <div class="section-header">
-    <h3>&#128200; Distribution Chart</h3>
-  </div>
-  <div id="distributionChartContent">
     <div class="loading">Loading...</div>
   </div>
 </div>
@@ -1036,7 +1035,8 @@ async function loadDateRange(fromDate, toDate, periodLabel) {{
   renderZonePartnerCharts(allTickets);
   renderCritical(allTickets);
   resetFilters();
-  loadCategoriesRange(fromDate, toDate);
+  loadPivotTable(null, fromDate, toDate);
+  loadCategoryDailyTrend(fromDate, toDate);
   // Hide master comparison for range view (not meaningful for aggregated data)
   document.getElementById('masterContent').innerHTML =
     '<div class="loading" style="color:var(--text2)">Master sheet comparison is only available for single-date views.</div>';
@@ -1072,7 +1072,8 @@ async function loadDate(date) {{
   renderZonePartnerCharts(allTickets);
   renderCritical(allTickets);
   resetFilters();
-  loadCategories(date);
+  loadPivotTable(date);
+  loadCategoryDailyTrend();
   loadMasterComparison(date);
 }}
 
@@ -1090,403 +1091,299 @@ const CAT_COLORS = {{
   'Unknown': '#94a3b8',
 }};
 
-async function loadCategories(date) {{
+// ========== PIVOT TABLE (Category x Aging) ==========
+async function loadPivotTable(date, fromDate, toDate) {{
+  const pivotEl = document.getElementById('pivotContent');
+  pivotEl.innerHTML = '<div class="loading">Loading bifurcation...</div>';
   try {{
-    // Fetch both: simple category breakdown + pivot data
-    const [cats, pivot] = await Promise.all([
-      api(`/api/categories?date=${{date}}`),
-      api(`/api/category-aging?date=${{date}}`).catch(() => null),
-    ]);
+    let pivot;
+    if (fromDate && toDate) {{
+      pivot = await api(`/api/category-aging/range?from=${{fromDate}}&to=${{toDate}}`);
+    }} else {{
+      pivot = await api(`/api/category-aging?date=${{date}}`);
+    }}
 
-    if ((!cats || cats.error || Object.keys(cats).length === 0) && (!pivot || pivot.error)) {{
-      document.getElementById('pivotContent').innerHTML = '<div class="loading">No category data available</div>';
-      document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">No category data available</div>';
-      document.getElementById('distributionChartContent').innerHTML = '<div class="loading">No category data available</div>';
+    if (!pivot || pivot.error || !pivot.categories || pivot.categories.length === 0) {{
+      pivotEl.innerHTML = '<div class="loading">No pivot data available</div>';
       return;
     }}
 
-    // ---- PIVOT TABLE (Category × Aging Bracket) ----
-    let pivotHtml = '';
-    if (pivot && pivot.categories && pivot.categories.length > 0) {{
-      // Store pivot data globally for filtering
-      window._pivotData = pivot;
+    window._pivotData = pivot;
+    const buckets = pivot.buckets;
 
-      const buckets = pivot.buckets;
+    let dropdownItems = pivot.categories.map(cat => {{
+      const color = CAT_COLORS[cat] || '#94a3b8';
+      return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;transition:background .1s"
+        onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
+        <input type="checkbox" checked data-cat="${{cat}}" onchange="filterPivotTable()"
+          style="accent-color:${{color}};width:14px;height:14px;cursor:pointer">
+        <span style="width:8px;height:8px;border-radius:50%;background:${{color}};display:inline-block;flex-shrink:0"></span>
+        ${{cat}}
+      </label>`;
+    }}).join('');
 
-      // Build multi-select dropdown options
-      let dropdownItems = pivot.categories.map(cat => {{
-        const color = CAT_COLORS[cat] || '#94a3b8';
-        return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;transition:background .1s"
-          onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
-          <input type="checkbox" checked data-cat="${{cat}}" onchange="filterPivotTable()"
-            style="accent-color:${{color}};width:14px;height:14px;cursor:pointer">
-          <span style="width:8px;height:8px;border-radius:50%;background:${{color}};display:inline-block;flex-shrink:0"></span>
-          ${{cat}}
-        </label>`;
-      }}).join('');
+    const noteText = (fromDate && toDate) ? `Aggregated data from ${{fromDate}} to ${{toDate}}` : '&#128279; Click any number to download the raw ticket data for that cell';
 
-      pivotHtml = `
-        <div style="margin-bottom:12px">
-          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
-            <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
-              <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
-              <tbody id="pivotBody"></tbody>
-            </table>
+    pivotEl.innerHTML = `
+      <div style="margin-bottom:12px">
+        <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+          <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
+            <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
+            <tbody id="pivotBody"></tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-top:6px">${{noteText}}</div>
+      </div>`;
+
+    window._pivotFilterDropdown = `
+      <div style="position:relative;display:inline-block" id="pivotFilterWrap">
+        <button onclick="var d=document.getElementById('pivotDropdown');d.style.display=d.style.display==='none'?'block':'none'"
+          style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:6px">
+          &#9776; Filter Categories <span style="font-size:10px;color:#64748b" id="pivotFilterCount">(${{pivot.categories.length}}/${{pivot.categories.length}})</span>
+          <span style="font-size:9px">&#9660;</span>
+        </button>
+        <div id="pivotDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:50;min-width:280px;max-height:320px;overflow-y:auto">
+          <div style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #e2e8f0;position:sticky;top:0;background:#fff;z-index:1">
+            <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=true);filterPivotTable()"
+              style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Select All</button>
+            <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=false);filterPivotTable()"
+              style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Deselect All</button>
           </div>
-          <div style="font-size:11px;color:var(--text2);margin-top:6px">
-            &#128279; Click any number to download the raw ticket data for that cell
-          </div>
-        </div>`;
+          ${{dropdownItems}}
+        </div>
+      </div>`;
 
-      // Store dropdown HTML globally so section header can use it
-      window._pivotFilterDropdown = `
-        <div style="position:relative;display:inline-block" id="pivotFilterWrap">
-          <button onclick="var d=document.getElementById('pivotDropdown');d.style.display=d.style.display==='none'?'block':'none'"
-            style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:6px">
-            &#9776; Filter Categories <span style="font-size:10px;color:#64748b" id="pivotFilterCount">(${{pivot.categories.length}}/${{pivot.categories.length}})</span>
-            <span style="font-size:9px">&#9660;</span>
-          </button>
-          <div id="pivotDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:50;min-width:280px;max-height:320px;overflow-y:auto">
-            <div style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #e2e8f0;position:sticky;top:0;background:#fff;z-index:1">
-              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=true);filterPivotTable()"
-                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Select All</button>
-              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=false);filterPivotTable()"
-                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Deselect All</button>
-            </div>
-            ${{dropdownItems}}
-          </div>
-        </div>`;
+    document.addEventListener('click', function(e) {{
+      const wrap = document.getElementById('pivotFilterWrap');
+      const dd = document.getElementById('pivotDropdown');
+      if (wrap && dd && !wrap.contains(e.target)) dd.style.display = 'none';
+    }});
 
-      // Close dropdown when clicking outside
-      document.addEventListener('click', function(e) {{
-        const wrap = document.getElementById('pivotFilterWrap');
-        const dd = document.getElementById('pivotDropdown');
-        if (wrap && dd && !wrap.contains(e.target)) dd.style.display = 'none';
-      }});
-    }}
-
-    // Pivot filter + render function
-    window.filterPivotTable = function() {{
-      const pivot = window._pivotData;
-      if (!pivot) return;
-
-      const buckets = pivot.buckets;
-      const catData = pivot.data;
-      const totalsByCat = pivot.totals_by_cat;
-
-      // Determine which categories to show from checked checkboxes
-      const checked = Array.from(document.querySelectorAll('#pivotDropdown input[data-cat]:checked')).map(c => c.dataset.cat);
-      const catsToShow = checked.length > 0 ? pivot.categories.filter(c => checked.includes(c)) : [];
-
-      // Update filter count badge
-      const countEl = document.getElementById('pivotFilterCount');
-      if (countEl) countEl.textContent = `(${{checked.length}}/${{pivot.categories.length}})`;
-
-      if (catsToShow.length === 0) {{
-        document.getElementById('pivotHead').innerHTML = '';
-        document.getElementById('pivotBody').innerHTML = '<tr><td style="text-align:center;padding:30px;color:var(--text2)">Select at least one category to view data</td></tr>';
-        return;
-      }}
-
-      // Build header
-      let headerCells = `<th style="text-align:left;min-width:180px;position:sticky;left:0;background:#f8fafc;z-index:2">Disposition Folder Level 3</th>`;
-      buckets.forEach(b => {{
-        headerCells += `<th style="text-align:center;min-width:80px;white-space:nowrap">${{b}}</th>`;
-      }});
-      headerCells += `<th style="text-align:center;min-width:90px;font-weight:700">Grand Total</th>`;
-      document.getElementById('pivotHead').innerHTML = headerCells;
-
-      // Build data rows
-      let bodyRows = '';
-      let filteredTotalsByBucket = {{}};
-      let filteredGrandTotal = 0;
-
-      catsToShow.forEach(cat => {{
-        const isInternet = cat === 'Internet Issues';
-        const color = CAT_COLORS[cat] || '#94a3b8';
-        const rowStyle = isInternet ? 'background:#eff6ff;font-weight:700' : '';
-
-        let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1">
-          <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
-        </td>`;
-
-        buckets.forEach(b => {{
-          const val = (catData[cat] && catData[cat][b]) || 0;
-          filteredTotalsByBucket[b] = (filteredTotalsByBucket[b] || 0) + val;
-          if (val > 0) {{
-            const encCat = encodeURIComponent(cat);
-            const encBuck = encodeURIComponent(b);
-            cells += `<td class="num">
-              <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}&bucket=${{encBuck}}"
-                 style="color:${{isInternet ? '#1a73e8' : '#374151'}};text-decoration:none;cursor:pointer;border-bottom:1px dashed ${{isInternet ? '#1a73e8' : '#9ca3af'}}"
-                 title="Download ${{val}} tickets: ${{cat}} / ${{b}}"
-                 target="_blank">${{val.toLocaleString()}}</a>
-            </td>`;
-          }} else {{
-            cells += `<td class="num" style="color:#d1d5db">—</td>`;
-          }}
-        }});
-
-        const catTotal = totalsByCat[cat] || 0;
-        filteredGrandTotal += catTotal;
-        const encCat = encodeURIComponent(cat);
-        cells += `<td class="num" style="font-weight:700">
-          <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}"
-             style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
-             title="Download all ${{catTotal}} tickets: ${{cat}}"
-             target="_blank">${{catTotal.toLocaleString()}}</a>
-        </td>`;
-
-        bodyRows += `<tr style="${{rowStyle}}">${{cells}}</tr>`;
-      }});
-
-      // Grand Total row (recalculated based on filter)
-      let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">Grand Total</td>`;
-      buckets.forEach(b => {{
-        const val = filteredTotalsByBucket[b] || 0;
-        const encBuck = encodeURIComponent(b);
-        totalCells += `<td class="num" style="font-weight:700">
-          <a href="/api/download-category-bucket?date=${{currentDate}}&bucket=${{encBuck}}"
-             style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
-             title="Download ${{val}} tickets in ${{b}}"
-             target="_blank">${{val.toLocaleString()}}</a>
-        </td>`;
-      }});
-      totalCells += `<td class="num" style="font-weight:700;color:#1a73e8">${{filteredGrandTotal.toLocaleString()}}</td>`;
-
-      document.getElementById('pivotBody').innerHTML = bodyRows +
-        `<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>`;
-    }};
-
-    // ---- SUMMARY TABLE + CHART (existing) ----
-    let summaryHtml = '';
-    let chartHtml = '';
-    if (cats && Object.keys(cats).length > 0) {{
-      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
-      const total = sorted.reduce((s, [k,v]) => s + v, 0);
-
-      let tableRows = sorted.map(([cat, count]) => {{
-        const pct = (count / total * 100).toFixed(1);
-        const color = CAT_COLORS[cat] || '#94a3b8';
-        const isInternet = cat === 'Internet Issues';
-        return `<tr style="${{isInternet ? 'background:#eff6ff;font-weight:700' : ''}}">
-          <td><span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}</td>
-          <td class="num">${{count.toLocaleString()}}</td>
-          <td class="num">${{pct}}%</td>
-          <td><div class="bar-bg"><div class="bar-fill" style="width:${{pct}}%;background:${{color}}"></div></div></td>
-        </tr>`;
-      }}).join('');
-
-      tableRows += `<tr style="border-top:2px solid var(--border);font-weight:700">
-        <td>TOTAL</td><td class="num">${{total.toLocaleString()}}</td><td class="num">100%</td><td></td></tr>`;
-
-      summaryHtml = `<div>
-        <div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-          Category Summary</div>
-        <table><thead><tr><th>Category (Disposition L3)</th><th style="text-align:right">Tickets</th>
-        <th style="text-align:right">%</th><th>Distribution</th></tr></thead>
-        <tbody>${{tableRows}}</tbody></table></div>`;
-
-      chartHtml = `<div><div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-        Distribution Chart</div>
-        <div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
-    }}
-
-    // Render into separate section containers
-    document.getElementById('pivotContent').innerHTML = pivotHtml || '<div class="loading">No pivot data available</div>';
-    document.getElementById('categorySummaryContent').innerHTML = summaryHtml || '<div class="loading">No category summary data</div>';
-    document.getElementById('distributionChartContent').innerHTML = chartHtml || '<div class="loading">No chart data</div>';
-
-    // Render pivot table and inject filter dropdown into section header
-    if (window._pivotData) {{
-      const fc = document.getElementById('pivotFilterContainer');
-      if (fc && window._pivotFilterDropdown) fc.innerHTML = window._pivotFilterDropdown;
-      filterPivotTable();
-    }}
-
-    // Render doughnut chart
-    if (cats && Object.keys(cats).length > 0) {{
-      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
-      if (charts.category) charts.category.destroy();
-      charts.category = new Chart(document.getElementById('categoryChart'), {{
-        type: 'doughnut',
-        data: {{
-          labels: sorted.map(([k]) => k),
-          datasets: [{{
-            data: sorted.map(([,v]) => v),
-            backgroundColor: sorted.map(([k]) => CAT_COLORS[k] || '#94a3b8'),
-            borderWidth: 2,
-            borderColor: '#ffffff',
-          }}]
-        }},
-        options: {{
-          responsive: true,
-          maintainAspectRatio: false,
-          cutout: '50%',
-          plugins: {{
-            legend: {{
-              position: 'right',
-              labels: {{ color: '#6b7280', padding: 8, font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }}
-            }}
-          }}
-        }}
-      }});
-    }}
+    const fc = document.getElementById('pivotFilterContainer');
+    if (fc && window._pivotFilterDropdown) fc.innerHTML = window._pivotFilterDropdown;
+    filterPivotTable();
   }} catch(e) {{
-    document.getElementById('pivotContent').innerHTML = '<div class="loading">Could not load categories</div>';
-    document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">Could not load categories</div>';
-    document.getElementById('distributionChartContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    pivotEl.innerHTML = '<div class="loading">Could not load pivot data</div>';
   }}
 }}
 
-// ========== RANGE CATEGORIES (aggregated) ==========
-async function loadCategoriesRange(fromDate, toDate) {{
-  try {{
-    const [cats, pivot] = await Promise.all([
-      api(`/api/categories/range?from=${{fromDate}}&to=${{toDate}}`),
-      api(`/api/category-aging/range?from=${{fromDate}}&to=${{toDate}}`).catch(() => null),
-    ]);
+// Pivot filter + render function
+window.filterPivotTable = function() {{
+  const pivot = window._pivotData;
+  if (!pivot) return;
 
-    if ((!cats || cats.error || Object.keys(cats).length === 0) && (!pivot || pivot.error)) {{
-      document.getElementById('pivotContent').innerHTML = '<div class="loading">No category data for this range</div>';
-      document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">No category data for this range</div>';
-      document.getElementById('distributionChartContent').innerHTML = '<div class="loading">No category data for this range</div>';
+  const buckets = pivot.buckets;
+  const catData = pivot.data;
+  const totalsByCat = pivot.totals_by_cat;
+
+  const checked = Array.from(document.querySelectorAll('#pivotDropdown input[data-cat]:checked')).map(c => c.dataset.cat);
+  const catsToShow = checked.length > 0 ? pivot.categories.filter(c => checked.includes(c)) : [];
+
+  const countEl = document.getElementById('pivotFilterCount');
+  if (countEl) countEl.textContent = `(${{checked.length}}/${{pivot.categories.length}})`;
+
+  if (catsToShow.length === 0) {{
+    document.getElementById('pivotHead').innerHTML = '';
+    document.getElementById('pivotBody').innerHTML = '<tr><td style="text-align:center;padding:30px;color:var(--text2)">Select at least one category to view data</td></tr>';
+    return;
+  }}
+
+  let headerCells = `<th style="text-align:left;min-width:180px;position:sticky;left:0;background:#f8fafc;z-index:2">Disposition Folder Level 3</th>`;
+  buckets.forEach(b => {{
+    headerCells += `<th style="text-align:center;min-width:80px;white-space:nowrap">${{b}}</th>`;
+  }});
+  headerCells += `<th style="text-align:center;min-width:90px;font-weight:700">Grand Total</th>`;
+  document.getElementById('pivotHead').innerHTML = headerCells;
+
+  let bodyRows = '';
+  let filteredTotalsByBucket = {{}};
+  let filteredGrandTotal = 0;
+
+  catsToShow.forEach(cat => {{
+    const isInternet = cat === 'Internet Issues';
+    const color = CAT_COLORS[cat] || '#94a3b8';
+    const rowStyle = isInternet ? 'background:#eff6ff;font-weight:700' : '';
+
+    let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1">
+      <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
+    </td>`;
+
+    buckets.forEach(b => {{
+      const val = (catData[cat] && catData[cat][b]) || 0;
+      filteredTotalsByBucket[b] = (filteredTotalsByBucket[b] || 0) + val;
+      if (val > 0) {{
+        const encCat = encodeURIComponent(cat);
+        const encBuck = encodeURIComponent(b);
+        cells += `<td class="num">
+          <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}&bucket=${{encBuck}}"
+             style="color:${{isInternet ? '#1a73e8' : '#374151'}};text-decoration:none;cursor:pointer;border-bottom:1px dashed ${{isInternet ? '#1a73e8' : '#9ca3af'}}"
+             title="Download ${{val}} tickets: ${{cat}} / ${{b}}"
+             target="_blank">${{val.toLocaleString()}}</a>
+        </td>`;
+      }} else {{
+        cells += `<td class="num" style="color:#d1d5db">—</td>`;
+      }}
+    }});
+
+    const catTotal = totalsByCat[cat] || 0;
+    filteredGrandTotal += catTotal;
+    const encCat = encodeURIComponent(cat);
+    cells += `<td class="num" style="font-weight:700">
+      <a href="/api/download-category-bucket?date=${{currentDate}}&category=${{encCat}}"
+         style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
+         title="Download all ${{catTotal}} tickets: ${{cat}}"
+         target="_blank">${{catTotal.toLocaleString()}}</a>
+    </td>`;
+
+    bodyRows += `<tr style="${{rowStyle}}">${{cells}}</tr>`;
+  }});
+
+  let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">Grand Total</td>`;
+  buckets.forEach(b => {{
+    const val = filteredTotalsByBucket[b] || 0;
+    const encBuck = encodeURIComponent(b);
+    totalCells += `<td class="num" style="font-weight:700">
+      <a href="/api/download-category-bucket?date=${{currentDate}}&bucket=${{encBuck}}"
+         style="color:#1a73e8;text-decoration:none;border-bottom:1px dashed #1a73e8"
+         title="Download ${{val}} tickets in ${{b}}"
+         target="_blank">${{val.toLocaleString()}}</a>
+    </td>`;
+  }});
+  totalCells += `<td class="num" style="font-weight:700;color:#1a73e8">${{filteredGrandTotal.toLocaleString()}}</td>`;
+
+  document.getElementById('pivotBody').innerHTML = bodyRows +
+    `<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>`;
+}};
+
+// ========== CATEGORY DAILY TREND ==========
+// Load category daily trend (independent section with its own date filter)
+async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
+  const container = document.getElementById('categorySummaryContent');
+  container.innerHTML = '<div class="loading">Loading category trend...</div>';
+
+  try {{
+    let fromDate, toDate;
+    if (overrideFrom && overrideTo) {{
+      fromDate = overrideFrom;
+      toDate = overrideTo;
+    }} else {{
+      // Default: last 7 days ending at currentDate or latest available
+      const refDate = currentDate || (availableDates.length > 0 ? availableDates[0] : null);
+      if (!refDate) {{
+        container.innerHTML = '<div class="loading">No dates available</div>';
+        return;
+      }}
+      toDate = refDate;
+      const to = new Date(refDate + 'T00:00:00');
+      to.setDate(to.getDate() - 6);
+      fromDate = localDateStr(to);
+    }}
+
+    // Update the section's date inputs
+    document.getElementById('catTrendFrom').value = fromDate;
+    document.getElementById('catTrendTo').value = toDate;
+
+    const data = await api(`/api/category-daily-trend?from=${{fromDate}}&to=${{toDate}}`);
+    if (!data || data.error || !data.dates || data.dates.length === 0) {{
+      container.innerHTML = '<div class="loading">No category trend data available for this range</div>';
       return;
     }}
 
-    // Re-use the same rendering logic as loadCategories by setting window._pivotData
-    // and calling filterPivotTable after DOM update
-    let pivotHtml = '';
-    if (pivot && pivot.categories && pivot.categories.length > 0) {{
-      window._pivotData = pivot;
+    const dates = data.dates;
+    const categories = data.categories;
 
-      const buckets = pivot.buckets;
+    // Collect all category names and sort by total descending
+    const catNames = Object.keys(categories);
+    const catTotals = {{}};
+    catNames.forEach(cat => {{
+      catTotals[cat] = dates.reduce((s, d) => s + (categories[cat][d] || 0), 0);
+    }});
+    catNames.sort((a, b) => catTotals[b] - catTotals[a]);
 
-      let dropdownItems = pivot.categories.map(cat => {{
-        const color = CAT_COLORS[cat] || '#94a3b8';
-        return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;transition:background .1s"
-          onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
-          <input type="checkbox" checked data-cat="${{cat}}" onchange="filterPivotTable()"
-            style="accent-color:${{color}};width:14px;height:14px;cursor:pointer">
-          <span style="width:8px;height:8px;border-radius:50%;background:${{color}};display:inline-block;flex-shrink:0"></span>
-          ${{cat}}
-        </label>`;
-      }}).join('');
+    // Compute daily totals
+    const dailyTotals = {{}};
+    dates.forEach(d => {{
+      dailyTotals[d] = catNames.reduce((s, cat) => s + (categories[cat][d] || 0), 0);
+    }});
 
-      pivotHtml = `
-        <div style="margin-bottom:12px">
-          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
-            <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
-              <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
-              <tbody id="pivotBody"></tbody>
-            </table>
-          </div>
-          <div style="font-size:11px;color:var(--text2);margin-top:6px">
-            Aggregated data from ${{fromDate}} to ${{toDate}}
-          </div>
-        </div>`;
-
-      window._pivotFilterDropdown = `
-        <div style="position:relative;display:inline-block" id="pivotFilterWrap">
-          <button onclick="var d=document.getElementById('pivotDropdown');d.style.display=d.style.display==='none'?'block':'none'"
-            style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:6px">
-            &#9776; Filter Categories <span style="font-size:10px;color:#64748b" id="pivotFilterCount">(${{pivot.categories.length}}/${{pivot.categories.length}})</span>
-            <span style="font-size:9px">&#9660;</span>
-          </button>
-          <div id="pivotDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:50;min-width:280px;max-height:320px;overflow-y:auto">
-            <div style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #e2e8f0;position:sticky;top:0;background:#fff;z-index:1">
-              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=true);filterPivotTable()"
-                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Select All</button>
-              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=false);filterPivotTable()"
-                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Deselect All</button>
-            </div>
-            ${{dropdownItems}}
-          </div>
-        </div>`;
-
-      document.addEventListener('click', function(e) {{
-        const wrap = document.getElementById('pivotFilterWrap');
-        const dd = document.getElementById('pivotDropdown');
-        if (wrap && dd && !wrap.contains(e.target)) dd.style.display = 'none';
-      }});
+    // Format date for column header: "Mar 18"
+    function shortCol(dateStr) {{
+      const dt = new Date(dateStr + 'T00:00:00');
+      return dt.toLocaleDateString('en-IN', {{ day: 'numeric', month: 'short' }});
     }}
 
-    // Summary table + chart
-    let summaryHtml = '';
-    let chartHtml = '';
-    if (cats && Object.keys(cats).length > 0) {{
-      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
-      const total = sorted.reduce((s, [k,v]) => s + v, 0);
+    // Build header
+    let headerCells = `<th style="text-align:left;min-width:200px;position:sticky;left:0;background:#f8fafc;z-index:2">Category</th>`;
+    dates.forEach(d => {{
+      headerCells += `<th style="text-align:center;min-width:75px;white-space:nowrap;font-size:11px">${{shortCol(d)}}</th>`;
+    }});
 
-      let tableRows = sorted.map(([cat, count]) => {{
+    // Build body rows
+    let bodyRows = '';
+    catNames.forEach(cat => {{
+      const color = CAT_COLORS[cat] || '#94a3b8';
+      const isInternet = cat === 'Internet Issues';
+      const rowStyle = isInternet ? 'background:#eff6ff;font-weight:700' : '';
+
+      let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1;white-space:nowrap">
+        <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
+      </td>`;
+
+      dates.forEach(d => {{
+        const count = categories[cat][d] || 0;
+        const total = dailyTotals[d] || 1;
         const pct = (count / total * 100).toFixed(1);
-        const color = CAT_COLORS[cat] || '#94a3b8';
-        const isInternet = cat === 'Internet Issues';
-        return `<tr style="${{isInternet ? 'background:#eff6ff;font-weight:700' : ''}}">
-          <td><span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}</td>
-          <td class="num">${{count.toLocaleString()}}</td>
-          <td class="num">${{pct}}%</td>
-          <td><div class="bar-bg"><div class="bar-fill" style="width:${{pct}}%;background:${{color}}"></div></div></td>
-        </tr>`;
-      }}).join('');
-
-      tableRows += `<tr style="border-top:2px solid var(--border);font-weight:700">
-        <td>TOTAL</td><td class="num">${{total.toLocaleString()}}</td><td class="num">100%</td><td></td></tr>`;
-
-      summaryHtml = `<div>
-        <div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-          Category Summary (Aggregated)</div>
-        <table><thead><tr><th>Category (Disposition L3)</th><th style="text-align:right">Tickets</th>
-        <th style="text-align:right">%</th><th>Distribution</th></tr></thead>
-        <tbody>${{tableRows}}</tbody></table></div>`;
-
-      chartHtml = `<div><div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-        Distribution Chart (Aggregated)</div>
-        <div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
-    }}
-
-    document.getElementById('pivotContent').innerHTML = pivotHtml || '<div class="loading">No pivot data for this range</div>';
-    document.getElementById('categorySummaryContent').innerHTML = summaryHtml || '<div class="loading">No category data</div>';
-    document.getElementById('distributionChartContent').innerHTML = chartHtml || '<div class="loading">No chart data</div>';
-
-    if (window._pivotData) {{
-      const fc = document.getElementById('pivotFilterContainer');
-      if (fc && window._pivotFilterDropdown) fc.innerHTML = window._pivotFilterDropdown;
-      filterPivotTable();
-    }}
-
-    if (cats && Object.keys(cats).length > 0) {{
-      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
-      if (charts.category) charts.category.destroy();
-      charts.category = new Chart(document.getElementById('categoryChart'), {{
-        type: 'doughnut',
-        data: {{
-          labels: sorted.map(([k]) => k),
-          datasets: [{{
-            data: sorted.map(([,v]) => v),
-            backgroundColor: sorted.map(([k]) => CAT_COLORS[k] || '#94a3b8'),
-            borderWidth: 2,
-            borderColor: '#ffffff',
-          }}]
-        }},
-        options: {{
-          responsive: true,
-          maintainAspectRatio: false,
-          cutout: '50%',
-          plugins: {{
-            legend: {{
-              position: 'right',
-              labels: {{ color: '#6b7280', padding: 8, font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }}
-            }}
-          }}
-        }}
+        cells += `<td class="num" style="font-size:11px">${{count > 0 ? pct + '%' : '—'}}</td>`;
       }});
-    }}
+
+      bodyRows += `<tr style="${{rowStyle}}">${{cells}}</tr>`;
+    }});
+
+    // TOTAL row with actual numbers
+    let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">TOTAL</td>`;
+    dates.forEach(d => {{
+      totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{(dailyTotals[d] || 0).toLocaleString()}}</td>`;
+    }});
+
+    const tableHtml = `
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+        <table style="min-width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
+          <tbody>
+            ${{bodyRows}}
+            <tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--text2);margin-top:6px">
+        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length - 1])}} &mdash; each cell shows % of daily total
+      </div>`;
+
+    container.innerHTML = tableHtml;
   }} catch(e) {{
-    document.getElementById('pivotContent').innerHTML = '<div class="loading">Could not load categories</div>';
-    document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">Could not load categories</div>';
-    document.getElementById('distributionChartContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    container.innerHTML = '<div class="loading">Could not load category trend</div>';
   }}
+}}
+
+// Apply the section's own date range filter
+function applyCatTrendFilter() {{
+  const from = document.getElementById('catTrendFrom').value;
+  const to = document.getElementById('catTrendTo').value;
+  if (!from || !to) {{
+    alert('Please select both FROM and TO dates');
+    return;
+  }}
+  if (from > to) {{
+    alert('FROM date must be before TO date');
+    return;
+  }}
+  // Limit to 120 days
+  const diff = (new Date(to + 'T00:00:00') - new Date(from + 'T00:00:00')) / (1000*60*60*24);
+  if (diff > 120) {{
+    alert('Maximum range is 120 days. Please narrow your selection.');
+    return;
+  }}
+  loadCategoryDailyTrend(from, to);
 }}
 
 // ========== MASTER SHEET COMPARISON ==========
@@ -2216,7 +2113,7 @@ function formatDate(d) {{
 
 // ========== DASHBOARD CUSTOMIZATION ==========
 const LAYOUT_KEY = 'pft_dashboard_layout';
-const DEFAULT_ORDER = ['summaryCards','categorySection','categorySummary','distributionChart','masterComparison','trendChart'];
+const DEFAULT_ORDER = ['summaryCards','categorySection','categorySummary','masterComparison','trendChart'];
 
 function getLayout() {{
   try {{

@@ -718,6 +718,48 @@ def get_category_breakdown_range(date_from, date_to):
     return aggregated
 
 
+def get_category_daily_trend(date_from, date_to):
+    """Return category breakdown for each date in the range.
+    Returns: {
+        'dates': ['2026-03-18', '2026-03-19', ...],
+        'categories': {
+            'Router Pickup': {'2026-03-18': 10290, '2026-03-19': 10468, ...},
+            'Internet Issues': {'2026-03-18': 1718, '2026-03-19': 1892, ...},
+            ...
+        }
+    }
+    """
+    import json
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT report_date, category_breakdown FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date ASC
+    """, (date_from, date_to))
+    rows = c.fetchall()
+    conn.close()
+
+    dates = []
+    categories = {}
+    for row in rows:
+        rd = row["report_date"]
+        dates.append(rd)
+        if row["category_breakdown"]:
+            try:
+                cats = json.loads(row["category_breakdown"])
+                for cat, count in cats.items():
+                    if cat not in categories:
+                        categories[cat] = {}
+                    categories[cat][rd] = count
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return {
+        "dates": dates,
+        "categories": categories,
+    }
+
+
 def get_daily_summary(report_date):
     """Get summary for a specific date."""
     conn = get_connection()

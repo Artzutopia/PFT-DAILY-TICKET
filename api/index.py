@@ -30,6 +30,7 @@ from history_db import (
     get_summary_range,
     get_category_aging_pivot_range,
     get_category_breakdown_range,
+    get_category_daily_trend,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -358,6 +359,15 @@ def api_categories_range():
     date_to = request.args.get("to")
     if date_from and date_to:
         return jsonify(get_category_breakdown_range(date_from, date_to))
+    return jsonify({"error": "from and to required"}), 400
+
+
+@app.route("/api/category-daily-trend")
+def api_category_daily_trend():
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if date_from and date_to:
+        return jsonify(get_category_daily_trend(date_from, date_to))
     return jsonify({"error": "from and to required"}), 400
 
 
