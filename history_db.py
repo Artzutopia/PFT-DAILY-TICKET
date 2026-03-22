@@ -186,6 +186,17 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_assign_date ON agent_assignments(report_date)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_assign_agent ON agent_assignments(report_date, agent_name)")
 
+    # New tickets cache - stores the filtered CSV at processing time
+    # Available for download until 11:59 PM that day, then auto-deleted
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS new_tickets_cache (
+            report_date TEXT PRIMARY KEY,
+            csv_data TEXT,
+            ticket_count INTEGER,
+            created_at TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -503,6 +514,50 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
     return total_count
 
 
+def save_new_tickets_cache(report_date_str, csv_data, ticket_count):
+    """Save the new tickets CSV data at processing time.
+    This cached CSV is available for download until 11:59 PM that day."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("""
+        INSERT OR REPLACE INTO new_tickets_cache (report_date, csv_data, ticket_count, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (report_date_str, csv_data, ticket_count, now_ist))
+    conn.commit()
+    conn.close()
+    print(f"[Cache] Saved {ticket_count} new tickets CSV for {report_date_str}")
+
+
+def get_new_tickets_cache(report_date_str):
+    """Retrieve cached new tickets CSV for a date. Returns (csv_data, ticket_count) or (None, 0)."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT csv_data, ticket_count FROM new_tickets_cache WHERE report_date = ?",
+              (report_date_str,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return row["csv_data"], row["ticket_count"]
+    return None, 0
+
+
+def cleanup_expired_cache():
+    """Delete new_tickets_cache entries from previous days (past 11:59 PM)."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    c.execute("DELETE FROM new_tickets_cache WHERE report_date < ?", (today,))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    if deleted:
+        print(f"[Cache Cleanup] Removed {deleted} expired new tickets cache entries")
+
+
 def cleanup_old_data():
     """
     Remove old data to keep the database small. Runs after each daily save.
@@ -519,11 +574,16 @@ def cleanup_old_data():
     c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_45,))
     del_tickets = c.rowcount
 
+    # Clean expired new tickets cache (previous days)
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    c.execute("DELETE FROM new_tickets_cache WHERE report_date < ?", (today,))
+    del_cache = c.rowcount
+
     total_deleted = del_full + del_tickets
-    if total_deleted > 0:
+    if total_deleted > 0 or del_cache > 0:
         conn.commit()
         conn.execute("VACUUM")
-        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows older than 45 days")
+        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows older than 45 days, {del_cache} expired cache entries")
     else:
         conn.commit()
         print(f"[Cleanup] No old data to remove (cutoff: {cutoff_45})")

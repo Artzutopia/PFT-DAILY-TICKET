@@ -284,6 +284,16 @@ def api_master_live():
 def api_download_new():
     date = request.args.get("date")
     if date:
+        # First try cached CSV (frozen at processing time, available until 11:59 PM)
+        from history_db import get_new_tickets_cache
+        cached_csv, cached_count = get_new_tickets_cache(date)
+        if cached_csv:
+            from flask import Response
+            resp = Response(cached_csv, mimetype="text/csv")
+            resp.headers["Content-Disposition"] = f"attachment; filename=NEW_tickets_to_upload_{date}.csv"
+            return resp
+
+        # Fallback: generate on the fly from snapshot IDs
         summary = get_daily_summary(date)
         new_ids = set()
         if summary and summary.get("master_new_ids"):

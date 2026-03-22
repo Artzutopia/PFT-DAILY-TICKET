@@ -189,9 +189,8 @@ def main():
         download_url = search_todays_morning_report()
 
     if not download_url:
-        log("FAILED: Could not find today's pending report email.")
-        log("Make sure the report has been sent (~10 AM IST).")
-        sys.exit(1)
+        log("No email found yet. Will retry every 5 minutes until 12:00 PM IST.")
+        return None  # Signal to retry loop
 
     # Step 2: Download the report
     timestamp = datetime.now(IST).strftime("%Y%m%d")
@@ -281,6 +280,29 @@ def main():
             ticket_ids = [t["ticket_no"] for t in tickets]
             result = save_master_snapshot(report_date, master_ids, ticket_ids)
             log(f"Master snapshot: {result['already']} existing, {result['new']} new to upload")
+
+            # Step 6b: Cache new tickets CSV for download (available until 11:59 PM)
+            try:
+                from history_db import save_new_tickets_cache, get_all_tickets_for_date
+                new_ids_set = set(result.get("new_ids", []))
+                if new_ids_set:
+                    all_tickets = get_all_tickets_for_date(report_date)
+                    new_tickets = [t for t in all_tickets if t.get("ticket_no") in new_ids_set]
+                    if new_tickets:
+                        # Build CSV string
+                        csv_buffer = io.StringIO()
+                        writer = csv.DictWriter(csv_buffer, fieldnames=new_tickets[0].keys())
+                        writer.writeheader()
+                        writer.writerows(new_tickets)
+                        csv_data = csv_buffer.getvalue()
+                        save_new_tickets_cache(report_date, csv_data, len(new_tickets))
+                        log(f"Cached {len(new_tickets)} new tickets CSV for download")
+                    else:
+                        log("No new tickets to cache")
+                else:
+                    log("No new ticket IDs — skipping CSV cache")
+            except Exception as ce:
+                log(f"Warning: Could not cache new tickets CSV: {ce}")
         except Exception as e:
             log(f"Warning: Could not snapshot master sheet: {e}")
 
@@ -296,5 +318,39 @@ def main():
     return output_path
 
 
+def run_with_retry():
+    """Run the daily agent with retry logic.
+    If the email hasn't arrived, retry every 5 minutes until 12:00 PM IST.
+    """
+    import time
+
+    RETRY_INTERVAL = 5 * 60  # 5 minutes in seconds
+    DEADLINE_HOUR = 12  # 12:00 PM IST
+
+    attempt = 1
+    while True:
+        now = datetime.now(IST)
+        log(f"Attempt #{attempt} at {now.strftime('%I:%M %p IST')}")
+
+        result = main()
+
+        if result is not None:
+            # Success — email found and processed
+            log("Daily agent completed successfully.")
+            return result
+
+        # Check if we've passed the deadline
+        if now.hour >= DEADLINE_HOUR:
+            log(f"DEADLINE REACHED ({DEADLINE_HOUR}:00 PM IST). Email not found today.")
+            log("You may need to manually download and process the report.")
+            sys.exit(1)
+
+        # Wait and retry
+        next_try = now + timedelta(seconds=RETRY_INTERVAL)
+        log(f"Retrying at {next_try.strftime('%I:%M %p IST')}...")
+        time.sleep(RETRY_INTERVAL)
+        attempt += 1
+
+
 if __name__ == "__main__":
-    main()
+    run_with_retry()

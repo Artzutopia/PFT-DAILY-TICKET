@@ -268,20 +268,30 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/download-new-tickets":
             date = params.get("date", [None])[0]
             if date:
-                # Use stored new IDs from snapshot
-                summary = get_daily_summary(date)
-                new_ids = set()
-                if summary and summary.get("master_new_ids"):
-                    new_ids = set(x.strip() for x in summary["master_new_ids"].split(",") if x.strip())
-                tickets = get_all_tickets_for_date(date)
-                if new_ids:
-                    new_tickets = [t for t in tickets if t.get("ticket_no") in new_ids]
+                # First try cached CSV (frozen at processing time)
+                from history_db import get_new_tickets_cache
+                cached_csv, cached_count = get_new_tickets_cache(date)
+                if cached_csv:
+                    fname = f"NEW_tickets_to_upload_{date}.csv"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv")
+                    self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                    self.end_headers()
+                    self.wfile.write(cached_csv.encode("utf-8"))
                 else:
-                    # Fallback to live if no snapshot
-                    master_ids, _ = get_master_ids()
-                    new_tickets = [t for t in tickets if t.get("ticket_no") not in master_ids]
-                fname = f"NEW_tickets_to_upload_{date}.csv"
-                self.send_csv(new_tickets, fname)
+                    # Fallback: generate from snapshot IDs
+                    summary = get_daily_summary(date)
+                    new_ids = set()
+                    if summary and summary.get("master_new_ids"):
+                        new_ids = set(x.strip() for x in summary["master_new_ids"].split(",") if x.strip())
+                    tickets = get_all_tickets_for_date(date)
+                    if new_ids:
+                        new_tickets = [t for t in tickets if t.get("ticket_no") in new_ids]
+                    else:
+                        master_ids, _ = get_master_ids()
+                        new_tickets = [t for t in tickets if t.get("ticket_no") not in master_ids]
+                    fname = f"NEW_tickets_to_upload_{date}.csv"
+                    self.send_csv(new_tickets, fname)
             else:
                 self.send_json({"error": "date required"}, 400)
         elif path == "/api/download-existing-tickets":
