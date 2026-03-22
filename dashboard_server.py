@@ -368,6 +368,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(trend)
             else:
                 self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/unique-tickets":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                from history_db import get_unique_ticket_counts
+                self.send_json(get_unique_ticket_counts(date_from, date_to))
+            else:
+                self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/aging-daily-trend":
             date_from = params.get("from", [None])[0]
             date_to = params.get("to", [None])[0]
@@ -727,6 +735,7 @@ def generate_dashboard_html():
     <button class="date-btn agg-btn" data-agg="median" onclick="setAggMode('median',this)">Median</button>
     <button class="date-btn agg-btn" data-agg="min" onclick="setAggMode('min',this)">Min</button>
     <button class="date-btn agg-btn" data-agg="max" onclick="setAggMode('max',this)">Max</button>
+    <button class="date-btn agg-btn" data-agg="unique" onclick="setAggMode('unique',this)">Unique</button>
   </div>
   <div class="cards" id="summaryCards"><div class="loading">Loading...</div></div>
 </div>
@@ -1059,6 +1068,7 @@ async function loadDateRange(fromDate, toDate, periodLabel) {{
   currentRangeMode = true;
   currentRangeFrom = fromDate;
   currentRangeTo = toDate;
+  cachedUniqueData = null; // reset unique cache for new range
 
   // Count how many data days are in the range
   const datesInRange = availableDates.filter(d => d >= fromDate && d <= toDate);
@@ -1866,10 +1876,16 @@ function delta(curr, prev, key, invert=false) {{
 let currentAggMode = 'avg';
 let lastSummaryData = null;
 
-function setAggMode(mode, btn) {{
+let cachedUniqueData = null;
+
+async function setAggMode(mode, btn) {{
   currentAggMode = mode;
   document.querySelectorAll('.agg-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  if (mode === 'unique' && !cachedUniqueData && currentRangeFrom && currentRangeTo) {{
+    document.getElementById('summaryCards').innerHTML = '<div class="loading">Loading unique tickets...</div>';
+    cachedUniqueData = await api(`/api/unique-tickets?from=${{currentRangeFrom}}&to=${{currentRangeTo}}`);
+  }}
   if (lastSummaryData) renderSummary(lastSummaryData);
 }}
 
@@ -1891,6 +1907,15 @@ function calcAgg(s, key) {{
   }}
 }}
 
+function uniqueCard(uniqueVal, sumVal, label, color, borderColor) {{
+  const pct = sumVal > 0 ? ((uniqueVal / sumVal) * 100).toFixed(1) : '0.0';
+  return `<div class="card" style="border-left:3px solid ${{borderColor}}">
+    <div class="card-label">${{label}}</div>
+    <div class="card-value" style="color:${{color}}">${{uniqueVal.toLocaleString()}}<span style="font-size:9px;color:#888;font-weight:400"> unique</span></div>
+    <div class="card-sub">${{pct}}% of ${{sumVal.toLocaleString()}} total</div>
+  </div>`;
+}}
+
 function renderSummary(s) {{
   lastSummaryData = s;
   const days = s.num_days || 1;
@@ -1898,6 +1923,24 @@ function renderSummary(s) {{
 
   // Show/hide aggregation mode bar
   document.getElementById('aggModeBar').style.display = isMulti ? '' : 'none';
+
+  // Unique mode — show unique counts with % of total
+  if (isMulti && currentAggMode === 'unique' && cachedUniqueData && !cachedUniqueData.error) {{
+    const u = cachedUniqueData;
+    document.getElementById('summaryCards').innerHTML =
+      uniqueCard(u.unique_total, s.total_pending, 'Total Pending Tickets', '#1a1a2e', 'var(--text2)') +
+      uniqueCard(u.unique_internet, s.total_internet, 'Internet Issue Tickets', 'var(--accent)', 'var(--accent)') +
+      `<div class="card" style="border-left:3px solid var(--green)">
+        <div class="card-label">Created on Report Day</div>
+        <div class="card-value green">${{(s.created_today || 0).toLocaleString()}}<span style="font-size:9px;color:#888;font-weight:400"> total</span></div>
+        <div class="card-sub">Sum across ${{days}} days</div>
+      </div>` +
+      uniqueCard(u.unique_critical, s.critical_gt48h, 'Critical (> 48h)', 'var(--red)', 'var(--red)') +
+      uniqueCard(u.unique_partner, s.queue_partner, 'Partner Queue', 'var(--orange)', 'var(--orange)') +
+      uniqueCard(u.unique_cx_high_pain, s.queue_cx_high_pain, 'CX High Pain', '#a855f7', '#a855f7') +
+      uniqueCard(u.unique_px_send_wiom, s.queue_px_send_wiom, 'PX-Send to Wiom', '#06b6d4', '#06b6d4');
+    return;
+  }}
 
   const v = (key) => isMulti ? calcAgg(s, key) : (s[key] || 0);
   const pct48 = v('total_internet') ? Math.round(v('critical_gt48h')/v('total_internet')*100) : 0;

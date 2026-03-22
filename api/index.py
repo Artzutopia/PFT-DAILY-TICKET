@@ -347,6 +347,17 @@ def api_summary_range():
     return jsonify({"error": "from and to required"}), 400
 
 
+@app.route("/api/unique-tickets")
+def api_unique_tickets():
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if date_from and date_to:
+        from history_db import get_unique_ticket_counts
+        result = get_unique_ticket_counts(date_from, date_to)
+        return jsonify(result)
+    return jsonify({"error": "from and to required"}), 400
+
+
 @app.route("/api/category-aging/range")
 def api_category_aging_range():
     date_from = request.args.get("from")

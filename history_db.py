@@ -713,6 +713,58 @@ def get_summary_range(date_from, date_to):
     return result
 
 
+def get_unique_ticket_counts(date_from, date_to):
+    """Get count of unique tickets across a date range.
+    Uses the latest appearance of each ticket for queue/status classification."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Unique Internet Issues tickets (from ticket_history which only has Internet Issues)
+    c.execute("""
+        SELECT COUNT(DISTINCT ticket_no) FROM ticket_history
+        WHERE report_date >= ? AND report_date <= ?
+    """, (date_from, date_to))
+    unique_internet = c.fetchone()[0] or 0
+
+    # Unique total tickets (from full_report_history — all categories except Router Pickup)
+    c.execute("""
+        SELECT COUNT(DISTINCT ticket_no) FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ?
+    """, (date_from, date_to))
+    unique_total = c.fetchone()[0] or 0
+
+    # Critical > 48h unique (tickets that appeared with >48h aging on any day)
+    c.execute("""
+        SELECT COUNT(DISTINCT ticket_no) FROM ticket_history
+        WHERE report_date >= ? AND report_date <= ? AND pending_hours > 48
+    """, (date_from, date_to))
+    unique_critical = c.fetchone()[0] or 0
+
+    # Queue counts — use latest appearance of each ticket
+    c.execute("""
+        SELECT current_queue, COUNT(*) FROM (
+            SELECT ticket_no, current_queue,
+                   ROW_NUMBER() OVER (PARTITION BY ticket_no ORDER BY report_date DESC) as rn
+            FROM ticket_history
+            WHERE report_date >= ? AND report_date <= ?
+        ) WHERE rn = 1
+        GROUP BY current_queue
+    """, (date_from, date_to))
+    queues = {row[0]: row[1] for row in c.fetchall()}
+
+    conn.close()
+
+    return {
+        "unique_total": unique_total,
+        "unique_internet": unique_internet,
+        "unique_critical": unique_critical,
+        "unique_partner": queues.get("Partner", 0),
+        "unique_cx_high_pain": queues.get("CX - High Pain", 0),
+        "unique_px_send_wiom": queues.get("PX-Send to Wiom", 0),
+    }
+
+
 def get_category_aging_pivot_range(date_from, date_to):
     """Get aggregated pivot table across a date range.
     Same structure as get_category_aging_pivot but summed across dates."""
