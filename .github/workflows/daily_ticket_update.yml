@@ -1,9 +1,11 @@
 name: Daily PFT Ticket Update
 
-# Runs every day at 4:45 AM UTC = 10:15 AM IST
+# Runs at 10:30 AM IST (5:00 AM UTC) - gives 15 min buffer after email arrives ~10:13 AM
+# Also runs at 11:00 AM IST (5:30 AM UTC) as backup in case first run missed
 on:
   schedule:
-    - cron: '45 4 * * *'
+    - cron: '0 5 * * 1-6'    # Mon-Sat at 10:30 AM IST (primary)
+    - cron: '30 5 * * 1-6'   # Mon-Sat at 11:00 AM IST (backup)
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
@@ -16,20 +18,57 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check if already updated today
+        id: check
+        run: |
+          # Get today's date in IST
+          TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+
+          # Check if database already has today's data by looking at last commit
+          LAST_MSG=$(git log -1 --pretty=%s 2>/dev/null || echo "")
+          if echo "$LAST_MSG" | grep -q "Auto-update: Daily ticket data $TODAY"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Already updated for $TODAY, skipping."
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "No update for $TODAY yet, proceeding."
+          fi
+
       - name: Set up Python
+        if: steps.check.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
+        if: steps.check.outputs.skip != 'true'
         run: pip install openpyxl requests
 
-      - name: Run daily agent
+      - name: Run daily agent (with retry)
+        if: steps.check.outputs.skip != 'true'
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: python run_daily_agent.py
+        run: |
+          # Try up to 3 times with 2-minute wait between retries
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt of 3..."
+            if python run_daily_agent.py; then
+              echo "Success on attempt $attempt!"
+              exit 0
+            else
+              echo "Attempt $attempt failed."
+              if [ $attempt -lt 3 ]; then
+                echo "Waiting 2 minutes before retry..."
+                sleep 120
+              fi
+            fi
+          done
+          echo "All 3 attempts failed."
+          exit 1
 
       - name: Commit and push updated database
+        if: steps.check.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -38,23 +77,27 @@ jobs:
           git add ticket_history.db
           git add internet_issues_tickets_*.xlsx 2>/dev/null || true
           git add pending_report_*.xlsx 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $(date -u +%Y-%m-%d)"
+          TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $TODAY"
           git push origin main
 
       # Wait for Vercel to deploy the updated dashboard
       - name: Wait for Vercel deployment
+        if: steps.check.outputs.skip != 'true'
         run: |
-          echo "Waiting 60 seconds for Vercel to deploy..."
-          sleep 60
+          echo "Waiting 90 seconds for Vercel to deploy..."
+          sleep 90
 
       # Take screenshot and post to Slack
       - name: Install Playwright
+        if: steps.check.outputs.skip != 'true'
         run: |
           pip install playwright
           playwright install chromium
           playwright install-deps chromium
 
       - name: Post screenshot to Slack
+        if: steps.check.outputs.skip != 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
@@ -62,11 +105,12 @@ jobs:
 
       # Notify on failure via Slack bot
       - name: Notify Slack on failure
-        if: failure()
+        if: failure() && steps.check.outputs.skip != 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
         run: |
+          pip install requests 2>/dev/null
           python -c "
           import requests, os
           from datetime import datetime
