@@ -768,56 +768,114 @@ def get_category_daily_trend(date_from, date_to):
     }
 
 
-def get_aging_daily_trend(date_from, date_to):
+def get_aging_daily_trend(date_from, date_to, l3=None, l4=None):
     """Return aging bucket counts for each date in the range.
+    If l3/l4 filters are provided, queries full_report_history instead of daily_summary.
     Returns: {
         'dates': ['2026-03-18', '2026-03-19', ...],
         'buckets': {
             '< 4h': {'2026-03-18': 307, ...},
             '4h - 12h': {'2026-03-18': 40, ...},
             ...
-        }
+        },
+        'available_l3': [...],
+        'available_l4': [...]
     }
     """
     conn = get_connection()
     c = conn.cursor()
 
-    bucket_keys = [
-        ('bucket_lt4h', '< 4h'),
-        ('bucket_4_12h', '4h - 12h'),
-        ('bucket_12_24h', '12h - 24h'),
-        ('bucket_24_36h', '24h - 36h'),
-        ('bucket_36_48h', '36h - 48h'),
-        ('bucket_48_72h', '48h - 72h'),
-        ('bucket_72_120h', '72h - 120h'),
-        ('bucket_gt120h', '> 120h'),
-    ]
+    bucket_labels = ['< 4h', '4h - 12h', '12h - 24h', '24h - 36h',
+                     '36h - 48h', '48h - 72h', '72h - 120h', '> 120h']
 
+    # Get available L3 and L4 values for the filter dropdowns
     c.execute("""
-        SELECT report_date, bucket_lt4h, bucket_4_12h, bucket_12_24h,
-               bucket_24_36h, bucket_36_48h, bucket_48_72h,
-               bucket_72_120h, bucket_gt120h
-        FROM daily_summary
-        WHERE report_date >= ? AND report_date <= ?
-        ORDER BY report_date ASC
+        SELECT DISTINCT disposition_l3 FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ? AND disposition_l3 != ''
+        ORDER BY disposition_l3
     """, (date_from, date_to))
-    rows = c.fetchall()
+    available_l3 = [r["disposition_l3"] for r in c.fetchall()]
+
+    l4_query = """
+        SELECT DISTINCT disposition_l4 FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ? AND disposition_l4 IS NOT NULL AND disposition_l4 != ''
+    """
+    l4_params = [date_from, date_to]
+    if l3:
+        l4_query += " AND disposition_l3 = ?"
+        l4_params.append(l3)
+    l4_query += " ORDER BY disposition_l4"
+    c.execute(l4_query, l4_params)
+    available_l4 = [r["disposition_l4"] for r in c.fetchall()]
+
+    if l3 or l4:
+        # Query from full_report_history with filters
+        query = """
+            SELECT report_date, aging_bucket, COUNT(*) as cnt
+            FROM full_report_history
+            WHERE report_date >= ? AND report_date <= ?
+        """
+        params = [date_from, date_to]
+        if l3:
+            query += " AND disposition_l3 = ?"
+            params.append(l3)
+        if l4:
+            query += " AND disposition_l4 = ?"
+            params.append(l4)
+        query += " GROUP BY report_date, aging_bucket ORDER BY report_date ASC"
+        c.execute(query, params)
+        raw = c.fetchall()
+
+        # Get distinct dates
+        c.execute("""
+            SELECT DISTINCT report_date FROM full_report_history
+            WHERE report_date >= ? AND report_date <= ?
+            ORDER BY report_date ASC
+        """, (date_from, date_to))
+        dates = [r["report_date"] for r in c.fetchall()]
+
+        buckets = {bl: {} for bl in bucket_labels}
+        for r in raw:
+            ab = r["aging_bucket"]
+            if ab in buckets:
+                buckets[ab][r["report_date"]] = r["cnt"]
+    else:
+        # Use pre-aggregated daily_summary (faster)
+        bucket_keys = [
+            ('bucket_lt4h', '< 4h'),
+            ('bucket_4_12h', '4h - 12h'),
+            ('bucket_12_24h', '12h - 24h'),
+            ('bucket_24_36h', '24h - 36h'),
+            ('bucket_36_48h', '36h - 48h'),
+            ('bucket_48_72h', '48h - 72h'),
+            ('bucket_72_120h', '72h - 120h'),
+            ('bucket_gt120h', '> 120h'),
+        ]
+
+        c.execute("""
+            SELECT report_date, bucket_lt4h, bucket_4_12h, bucket_12_24h,
+                   bucket_24_36h, bucket_36_48h, bucket_48_72h,
+                   bucket_72_120h, bucket_gt120h
+            FROM daily_summary
+            WHERE report_date >= ? AND report_date <= ?
+            ORDER BY report_date ASC
+        """, (date_from, date_to))
+        rows = c.fetchall()
+
+        dates = []
+        buckets = {bl: {} for bl in bucket_labels}
+        for row in rows:
+            rd = row["report_date"]
+            dates.append(rd)
+            for bk, bl in bucket_keys:
+                buckets[bl][rd] = row[bk] or 0
+
     conn.close()
-
-    dates = []
-    buckets = {}
-    for bk, bl in bucket_keys:
-        buckets[bl] = {}
-
-    for row in rows:
-        rd = row["report_date"]
-        dates.append(rd)
-        for bk, bl in bucket_keys:
-            buckets[bl][rd] = row[bk] or 0
-
     return {
         "dates": dates,
         "buckets": buckets,
+        "available_l3": available_l3,
+        "available_l4": available_l4,
     }
 
 

@@ -371,8 +371,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/aging-daily-trend":
             date_from = params.get("from", [None])[0]
             date_to = params.get("to", [None])[0]
+            l3 = params.get("l3", [None])[0]
+            l4 = params.get("l4", [None])[0]
             if date_from and date_to:
-                self.send_json(get_aging_daily_trend(date_from, date_to))
+                self.send_json(get_aging_daily_trend(date_from, date_to, l3, l4))
             else:
                 self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/category-l4-trend":
@@ -1917,6 +1919,13 @@ function renderAging(s) {{
 // ========== AGING DAILY TREND ==========
 async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
   const container = document.getElementById('agingTrendContent');
+
+  // Read L3/L4 values BEFORE clearing the container (selects live inside it)
+  const l3Select = document.getElementById('agingL3Filter');
+  const l4Select = document.getElementById('agingL4Filter');
+  const l3Val = l3Select ? l3Select.value : '';
+  const l4Val = l4Select ? l4Select.value : '';
+
   container.innerHTML = '<div class="loading">Loading aging trend...</div>';
 
   try {{
@@ -1939,7 +1948,11 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
     document.getElementById('agingTrendFrom').value = fromDate;
     document.getElementById('agingTrendTo').value = toDate;
 
-    const data = await api(`/api/aging-daily-trend?from=${{fromDate}}&to=${{toDate}}`);
+    let url = `/api/aging-daily-trend?from=${{fromDate}}&to=${{toDate}}`;
+    if (l3Val) url += `&l3=${{encodeURIComponent(l3Val)}}`;
+    if (l4Val) url += `&l4=${{encodeURIComponent(l4Val)}}`;
+
+    const data = await api(url);
     if (!data || data.error || !data.dates || data.dates.length === 0) {{
       container.innerHTML = '<div class="loading">No aging trend data available for this range</div>';
       return;
@@ -1951,9 +1964,27 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
     window._agingTrendDates = dates;
     window._agingTrendBuckets = buckets;
 
+    // Build L3 dropdown (preserve selection)
+    const l3Options = (data.available_l3 || []);
+    let l3Html = `<select id="agingL3Filter" onchange="onAgingL3Change()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit;max-width:180px">
+      <option value="">All Categories (L3)</option>`;
+    l3Options.forEach(l3 => {{
+      l3Html += `<option value="${{l3}}" ${{l3 === l3Val ? 'selected' : ''}}>${{l3}}</option>`;
+    }});
+    l3Html += `</select>`;
+
+    // Build L4 dropdown (preserve selection)
+    const l4Options = (data.available_l4 || []);
+    let l4Html = `<select id="agingL4Filter" onchange="onAgingL4Change()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit;max-width:200px" ${{!l3Val ? 'disabled' : ''}}>
+      <option value="">All Sub-categories (L4)</option>`;
+    l4Options.forEach(l4 => {{
+      l4Html += `<option value="${{l4}}" ${{l4 === l4Val ? 'selected' : ''}}>${{l4}}</option>`;
+    }});
+    l4Html += `</select>`;
+
     const bucketNames = BUCKET_LABELS;
 
-    // Compute daily totals (sum of all buckets per date)
+    // Compute daily totals
     const dailyTotals = {{}};
     dates.forEach(d => {{
       dailyTotals[d] = bucketNames.reduce((s, b) => s + ((buckets[b] && buckets[b][d]) || 0), 0);
@@ -1963,6 +1994,12 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
       const dt = new Date(dateStr + 'T00:00:00');
       return dt.toLocaleDateString('en-IN', {{ day: 'numeric', month: 'short' }});
     }}
+
+    // Active filter label
+    let filterLabel = '';
+    if (l3Val) filterLabel += `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">L3: ${{l3Val}}</span> `;
+    if (l4Val) filterLabel += `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">L4: ${{l4Val}}</span> `;
+    if (l3Val || l4Val) filterLabel += `<button onclick="clearAgingCatFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600" title="Clear filters">&#10005; Clear</button>`;
 
     // Build header
     let headerCells = `<th style="text-align:left;min-width:160px;position:sticky;left:0;background:#f8fafc;z-index:2">Aging Bucket</th>`;
@@ -1999,6 +2036,9 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
     }});
 
     const tableHtml = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        ${{l3Html}} ${{l4Html}} ${{filterLabel}}
+      </div>
       <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
         <table style="min-width:100%;border-collapse:collapse">
           <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
@@ -2009,12 +2049,12 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
         </table>
       </div>
       <div style="font-size:11px;color:var(--text2);margin-top:6px">
-        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length - 1])}} &mdash; each cell shows % of daily internet issues total + count
+        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length - 1])}} &mdash; each cell shows count + % of daily total
       </div>`;
 
     container.innerHTML = tableHtml;
 
-    // Build filter dropdown
+    // Build bucket filter dropdown
     const checkedCount = bucketNames.length;
     const totalCount = bucketNames.length;
     let filterItems = '';
@@ -2056,6 +2096,32 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
   }} catch(e) {{
     container.innerHTML = '<div class="loading">Could not load aging trend</div>';
   }}
+}}
+
+// L3/L4 filter handlers for aging trend
+window.onAgingL3Change = function() {{
+  // Reset L4 when L3 changes, then reload
+  const l4 = document.getElementById('agingL4Filter');
+  if (l4) l4.value = '';
+  const from = document.getElementById('agingTrendFrom').value;
+  const to = document.getElementById('agingTrendTo').value;
+  if (from && to) loadAgingDailyTrend(from, to);
+}}
+
+window.onAgingL4Change = function() {{
+  const from = document.getElementById('agingTrendFrom').value;
+  const to = document.getElementById('agingTrendTo').value;
+  if (from && to) loadAgingDailyTrend(from, to);
+}}
+
+window.clearAgingCatFilters = function() {{
+  const l3 = document.getElementById('agingL3Filter');
+  const l4 = document.getElementById('agingL4Filter');
+  if (l3) l3.value = '';
+  if (l4) l4.value = '';
+  const from = document.getElementById('agingTrendFrom').value;
+  const to = document.getElementById('agingTrendTo').value;
+  if (from && to) loadAgingDailyTrend(from, to);
 }}
 
 // Show/hide aging rows and recalculate totals
