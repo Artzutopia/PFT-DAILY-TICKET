@@ -1294,6 +1294,10 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
     const dates = data.dates;
     const categories = data.categories;
 
+    // Store for filter recalculation
+    window._catTrendDates = dates;
+    window._catTrendCategories = categories;
+
     // Collect all category names and sort by total descending
     const catNames = Object.keys(categories);
     const catTotals = {{}};
@@ -1407,23 +1411,60 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
   }}
 }}
 
-// Show/hide category rows in the daily trend table
+// Show/hide category rows and recalculate totals
 window.filterCatTrend = function() {{
   const checked = Array.from(document.querySelectorAll('#catTrendDropdown input[data-cattrend]:checked')).map(c => c.getAttribute('data-cattrend'));
-  const total = document.querySelectorAll('#catTrendDropdown input[data-cattrend]').length;
-  document.getElementById('catTrendFilterCount').textContent = `(${{checked.length}}/${{total}})`;
+  const totalCount = document.querySelectorAll('#catTrendDropdown input[data-cattrend]').length;
+  document.getElementById('catTrendFilterCount').textContent = `(${{checked.length}}/${{totalCount}})`;
 
-  // Get the table in categorySummaryContent
   const table = document.querySelector('#categorySummaryContent table');
   if (!table) return;
   const rows = table.querySelectorAll('tbody tr');
+  let totalRow = null;
+
   rows.forEach(row => {{
     const firstTd = row.querySelector('td');
     if (!firstTd) return;
     const text = firstTd.textContent.trim().replace(' ★', '');
-    if (text === 'TOTAL') return; // always show total
+    if (text === 'TOTAL') {{
+      totalRow = row;
+      return;
+    }}
     row.style.display = checked.includes(text) ? '' : 'none';
   }});
+
+  // Recalculate TOTAL row based on selected categories
+  if (totalRow && window._catTrendDates && window._catTrendCategories) {{
+    const dates = window._catTrendDates;
+    const categories = window._catTrendCategories;
+    const tds = totalRow.querySelectorAll('td');
+
+    dates.forEach((d, i) => {{
+      let filteredTotal = 0;
+      checked.forEach(cat => {{
+        filteredTotal += (categories[cat] && categories[cat][d]) || 0;
+      }});
+      if (tds[i + 1]) tds[i + 1].textContent = filteredTotal.toLocaleString();
+    }});
+
+    // Also recalculate % for visible rows based on filtered totals
+    rows.forEach(row => {{
+      if (row === totalRow || row.style.display === 'none') return;
+      const firstTd = row.querySelector('td');
+      if (!firstTd) return;
+      const cat = firstTd.textContent.trim().replace(' ★', '');
+      const cells = row.querySelectorAll('td');
+      dates.forEach((d, i) => {{
+        const count = (categories[cat] && categories[cat][d]) || 0;
+        let filteredTotal = 0;
+        checked.forEach(c => {{
+          filteredTotal += (categories[c] && categories[c][d]) || 0;
+        }});
+        const pct = filteredTotal > 0 ? (count / filteredTotal * 100).toFixed(1) : '0.0';
+        if (cells[i + 1]) cells[i + 1].textContent = count > 0 ? pct + '%' : '—';
+      }});
+    }});
+  }}
 }}
 
 // Apply the section's own date range filter
