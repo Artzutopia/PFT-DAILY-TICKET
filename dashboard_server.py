@@ -830,11 +830,11 @@ def generate_dashboard_html():
 <!-- Legacy aging section (hidden, used by drill-down) -->
 <div class="section" id="agingSection" style="display:none"></div>
 
-<!-- Charts Row 1: Aging + Queue -->
-<div class="charts" id="chartsRow1"></div>
+<!-- Charts Row 1: Aging + Queue (hidden) -->
+<div class="charts" id="chartsRow1" style="display:none"></div>
 
-<!-- Heatmap: Queue x Aging -->
-<div class="section" id="heatmapSection"></div>
+<!-- Heatmap: Queue x Aging (hidden) -->
+<div class="section" id="heatmapSection" style="display:none"></div>
 
 <!-- Charts Row 2: Trends -->
 <div class="dashboard-section" data-section-id="trendChart" data-section-label="Daily Trend Chart" draggable="true">
