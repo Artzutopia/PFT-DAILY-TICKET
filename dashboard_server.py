@@ -1984,8 +1984,8 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
         const pct = (count / total * 100).toFixed(1);
         const dlUrl = `/api/download-filtered?date=${{d}}&bucket=${{encodeURIComponent(label)}}`;
         cells += `<td class="num" style="font-size:11px;cursor:pointer" title="${{count.toLocaleString()}} tickets — click to download" onclick="window.location.href='${{dlUrl}}'">
-          ${{count > 0 ? pct + '%' : '—'}}
-          ${{count > 0 ? '<div style=\\"font-size:9px;color:#94a3b8;font-weight:400\\">' + count.toLocaleString() + '</div>' : ''}}
+          ${{count > 0 ? count.toLocaleString() : '—'}}
+          ${{count > 0 ? '<div style=\\"font-size:9px;color:#94a3b8;font-weight:400\\">' + pct + '%</div>' : ''}}
         </td>`;
       }});
 
@@ -2109,7 +2109,7 @@ window.filterAgingTrend = function() {{
         const pct = filteredTotal > 0 ? (count / filteredTotal * 100).toFixed(1) : '0.0';
         if (cells[i + 1]) {{
           cells[i + 1].innerHTML = count > 0
-            ? pct + '%<div style="font-size:9px;color:#94a3b8;font-weight:400">' + count.toLocaleString() + '</div>'
+            ? count.toLocaleString() + '<div style="font-size:9px;color:#94a3b8;font-weight:400">' + pct + '%</div>'
             : '—';
         }}
       }});
