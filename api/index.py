@@ -137,7 +137,18 @@ def api_summary():
         date = dates[0] if dates else None
     if date:
         summary = get_daily_summary(date)
-        return jsonify(summary if summary else {"error": "No data"})
+        if summary:
+            # Exclude Router Pickup from total_pending
+            try:
+                import json as _json
+                _cb = _json.loads(summary.get("category_breakdown") or "{}")
+                _router = _cb.get("Router Pickup", 0)
+                if _router and summary.get("total_pending"):
+                    summary["total_pending"] = summary["total_pending"] - _router
+            except Exception:
+                pass
+            return jsonify(summary)
+        return jsonify({"error": "No data"})
     return jsonify({"error": "No data available"}), 404
 
 

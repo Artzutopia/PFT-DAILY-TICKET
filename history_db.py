@@ -805,6 +805,27 @@ def get_summary_range(date_from, date_to):
         return None
     result = dict(row)
 
+    # Subtract Router Pickup from total_pending (sum level)
+    c.execute("""
+        SELECT category_breakdown FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date
+    """, (date_from, date_to))
+    cb_rows = c.fetchall()
+    import json as _json
+    total_router = 0
+    router_per_day = []
+    for cb_row in cb_rows:
+        try:
+            cb = _json.loads(cb_row["category_breakdown"] or "{}")
+            rp = cb.get("Router Pickup", 0)
+        except Exception:
+            rp = 0
+        total_router += rp
+        router_per_day.append(rp)
+    if result.get("total_pending"):
+        result["total_pending"] = (result["total_pending"] or 0) - total_router
+
     # Get per-day values for frontend aggregation (avg/median/min/max)
     KEYS = ["total_pending", "total_internet", "created_today", "critical_gt48h",
             "queue_partner", "queue_cx_high_pain", "queue_px_send_wiom",
@@ -822,6 +843,10 @@ def get_summary_range(date_from, date_to):
     daily_values = {}
     for k in KEYS:
         daily_values[k] = [dict(r)[k] or 0 for r in rows]
+    # Subtract Router Pickup from per-day total_pending values
+    for i in range(len(daily_values["total_pending"])):
+        if i < len(router_per_day):
+            daily_values["total_pending"][i] -= router_per_day[i]
     result["daily_values"] = daily_values
 
     return result

@@ -153,6 +153,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                                 summary["total_pending"] = _fr_count
                         except Exception:
                             pass
+                    # Exclude Router Pickup from total_pending
+                    try:
+                        import json as _json
+                        _cb = _json.loads(summary.get("category_breakdown") or "{}")
+                        _router = _cb.get("Router Pickup", 0)
+                        if _router and summary.get("total_pending"):
+                            summary["total_pending"] = summary["total_pending"] - _router
+                    except Exception:
+                        pass
                     self.send_json(summary)
                 else:
                     self.send_json({"error": "No data"})
