@@ -589,6 +589,10 @@ def generate_dashboard_html():
   .btn-download{{background:#ecfdf5;border-color:#a7f3d0;color:var(--green)}}
   .btn-download:hover{{background:var(--green);color:#fff;border-color:var(--green)}}
 
+  .chart-dd-item{{padding:8px 14px;font-size:12px;cursor:pointer;transition:background .1s;color:var(--text);white-space:nowrap}}
+  .chart-dd-item:hover{{background:#f0f4ff;color:#4338ca}}
+  .chart-dd-item.active{{background:#eef2ff;color:#4338ca;font-weight:600}}
+
   .date-nav{{display:flex;align-items:center;gap:6px;background:var(--card);padding:10px 16px;border-radius:10px;
     border:1px solid var(--border);margin-bottom:18px;flex-wrap:wrap;box-shadow:var(--shadow)}}
   .date-nav label{{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;font-weight:600}}
@@ -995,6 +999,52 @@ def generate_dashboard_html():
   <div id="agingTrendContent">
     <div class="loading">Loading...</div>
   </div>
+
+</div>
+</div>
+
+<!-- Aging Trend Chart (Independent Section) -->
+<div class="dashboard-section" data-section-id="agingChart" data-section-label="Aging Trend Chart" draggable="true">
+<div class="section" id="agingChartSection">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
+  <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <h3>&#128202; Aging Trend Chart</h3>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <div id="chartBucketFilterContainer" style="margin-right:4px"></div>
+      <div id="chartL3Container" style="margin-right:4px"></div>
+      <div id="chartL4Container" style="margin-right:4px"></div>
+      <label style="font-size:11px;color:var(--text2);font-weight:600">FROM</label>
+      <input type="date" id="chartFrom" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
+      <label style="font-size:11px;color:var(--text2);font-weight:600">TO</label>
+      <input type="date" id="chartTo" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
+      <button class="btn btn-sm btn-primary" onclick="applyChartFilter()">Apply</button>
+      <div id="agingChartTypeContainer" style="position:relative;display:inline-block">
+        <button onclick="document.getElementById('agingChartDropdown').classList.toggle('show')"
+          style="padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:6px">
+          &#128202; <span id="agingChartLabel">Column</span> &#9660;</button>
+        <div id="agingChartDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:100;min-width:180px;overflow:hidden">
+          <div class="chart-dd-item active" data-ctype="bar" onclick="pickAgingChart('bar','Column',this)">&#9642; Column</div>
+          <div class="chart-dd-item" data-ctype="stackedBar" onclick="pickAgingChart('stackedBar','Stacked Column',this)">&#9642; Stacked Column</div>
+          <div class="chart-dd-item" data-ctype="percent" onclick="pickAgingChart('percent','100% Stacked',this)">&#9642; 100% Stacked</div>
+          <div class="chart-dd-item" data-ctype="line" onclick="pickAgingChart('line','Line',this)">&#9642; Line</div>
+          <div class="chart-dd-item" data-ctype="area" onclick="pickAgingChart('area','Area',this)">&#9642; Area</div>
+          <div class="chart-dd-item" data-ctype="stackedArea" onclick="pickAgingChart('stackedArea','Stacked Area',this)">&#9642; Stacked Area</div>
+          <div class="chart-dd-item" data-ctype="combo" onclick="pickAgingChart('combo','Line + Column',this)">&#9642; Line + Column</div>
+          <div class="chart-dd-item" data-ctype="pie" onclick="pickAgingChart('pie','Pie',this)">&#9642; Pie</div>
+          <div class="chart-dd-item" data-ctype="doughnut" onclick="pickAgingChart('doughnut','Doughnut',this)">&#9642; Doughnut</div>
+          <div class="chart-dd-item" data-ctype="radar" onclick="pickAgingChart('radar','Radar',this)">&#9642; Radar</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="chartBadges" style="margin-bottom:8px"></div>
+  <div style="position:relative;height:400px;width:100%">
+    <canvas id="agingTrendChart"></canvas>
+  </div>
 </div>
 </div>
 
@@ -1277,6 +1327,7 @@ async function loadDateRange(fromDate, toDate, periodLabel) {{
   resetFilters();
   loadPivotTable(null, fromDate, toDate);
   loadCategoryDailyTrend(fromDate, toDate);
+  loadAgingChart(fromDate, toDate);
   // Hide master comparison for range view (not meaningful for aggregated data)
   document.getElementById('masterContent').innerHTML =
     '<div class="loading" style="color:var(--text2)">Master sheet comparison is only available for single-date views.</div>';
@@ -1314,6 +1365,7 @@ async function loadDate(date) {{
   loadPivotTable(date);
   loadCategoryDailyTrend();
   loadAgingDailyTrend();
+  loadAgingChart();
   loadMasterComparison(date);
 }}
 
@@ -2398,6 +2450,7 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
         if (!inside) dd.classList.remove('show');
       }});
     }});
+
   }} catch(e) {{
     container.innerHTML = '<div class="loading">Could not load aging trend</div>';
   }}
@@ -2499,6 +2552,312 @@ function applyAgingTrendFilter() {{
     return;
   }}
   loadAgingDailyTrend(from, to);
+}}
+
+// ========== AGING TREND CHART (Independent Section) ==========
+let _agingChart = null;
+let _agingChartType = 'bar';
+window._chartDates = [];
+window._chartBuckets = {{}};
+window._chartSelectedL3 = [];
+window._chartSelectedL4 = [];
+window._chartSelectedBuckets = BUCKET_LABELS.slice();
+
+function pickAgingChart(type, label, item) {{
+  _agingChartType = type;
+  document.querySelectorAll('.chart-dd-item').forEach(i => i.classList.remove('active'));
+  if (item) item.classList.add('active');
+  document.getElementById('agingChartLabel').textContent = label;
+  document.getElementById('agingChartDropdown').classList.remove('show');
+  renderAgingChart();
+}}
+
+// Close dropdowns on outside click
+document.addEventListener('click', function(e) {{
+  ['agingChartDropdown','chartBucketDD','chartL3DD','chartL4DD'].forEach(id => {{
+    const dd = document.getElementById(id);
+    if (!dd) return;
+    const containers = ['agingChartTypeContainer','chartBucketFilterContainer','chartL3Container','chartL4Container'];
+    const inside = containers.some(cid => {{ const c = document.getElementById(cid); return c && c.contains(e.target); }});
+    if (!inside) dd.classList.remove('show');
+  }});
+}});
+
+async function loadAgingChart(overrideFrom, overrideTo) {{
+  let fromDate, toDate;
+  if (overrideFrom && overrideTo) {{
+    fromDate = overrideFrom;
+    toDate = overrideTo;
+  }} else {{
+    const refDate = currentDate || (availableDates.length > 0 ? availableDates[0] : null);
+    if (!refDate) return;
+    toDate = refDate;
+    const to = new Date(refDate + 'T00:00:00');
+    to.setDate(to.getDate() - 6);
+    fromDate = localDateStr(to);
+  }}
+  document.getElementById('chartFrom').value = fromDate;
+  document.getElementById('chartTo').value = toDate;
+
+  const l3 = window._chartSelectedL3;
+  const l4 = window._chartSelectedL4;
+  let url = `/api/aging-daily-trend?from=${{fromDate}}&to=${{toDate}}`;
+  if (l3.length) url += `&l3=${{encodeURIComponent(l3.join(','))}}`;
+  if (l4.length) url += `&l4=${{encodeURIComponent(l4.join(','))}}`;
+
+  try {{
+    const data = await api(url);
+    if (!data || !data.dates || !data.dates.length) return;
+    window._chartDates = data.dates;
+    window._chartBuckets = data.buckets;
+    const l3Options = data.available_l3 || [];
+    const l4Options = data.available_l4 || [];
+
+    // Build Bucket filter
+    const bfc = document.getElementById('chartBucketFilterContainer');
+    if (bfc) {{
+      const selBuckets = window._chartSelectedBuckets;
+      let bItems = '';
+      BUCKET_LABELS.forEach((b, i) => {{
+        bItems += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
+          <input type="checkbox" ${{selBuckets.includes(b)?'checked':''}} data-chartbucket="${{b}}" onchange="chartApplyBuckets()" style="accent-color:${{BUCKET_COLORS[i]}};cursor:pointer"> ${{b}}</label>`;
+      }});
+      bfc.innerHTML = `<div style="position:relative;display:inline-block">
+        <button onclick="document.getElementById('chartBucketDD').classList.toggle('show')"
+          style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px">
+          &#9776; Buckets <span id="chartBucketCount">(${{selBuckets.length}}/${{BUCKET_LABELS.length}})</span> &#9660;</button>
+        <div id="chartBucketDD" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:200px;max-height:300px;overflow-y:auto">
+          <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+            <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=true);chartApplyBuckets()"
+              style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+            <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=false);chartApplyBuckets()"
+              style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+          </div>${{bItems}}</div></div>`;
+    }}
+
+    // Build L3 dropdown
+    const l3c = document.getElementById('chartL3Container');
+    if (l3c) {{
+      let l3Items = '';
+      l3Options.forEach(v => {{
+        l3Items += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
+          <input type="checkbox" ${{l3.includes(v)?'checked':''}} data-chartl3="${{v}}" style="cursor:pointer"> ${{v}}</label>`;
+      }});
+      const l3Cnt = l3.length;
+      l3c.innerHTML = `<div style="position:relative;display:inline-block">
+        <button onclick="document.getElementById('chartL3DD').classList.toggle('show')"
+          style="padding:4px 10px;border:1px solid ${{l3Cnt?'#6366f1':'var(--border)'}};border-radius:6px;background:${{l3Cnt?'#eef2ff':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{l3Cnt?'#4338ca':'inherit'}}">
+          ${{l3Cnt ? 'L3 ('+l3Cnt+')' : 'All Categories (L3)'}} &#9660;</button>
+        <div id="chartL3DD" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:250px;max-height:300px;overflow-y:auto">
+          <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+            <button onclick="document.querySelectorAll('#chartL3DD input[data-chartl3]').forEach(c=>c.checked=true);chartApplyL3()"
+              style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+            <button onclick="document.querySelectorAll('#chartL3DD input[data-chartl3]').forEach(c=>c.checked=false);chartApplyL3()"
+              style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+            <button onclick="chartApplyL3();document.getElementById('chartL3DD').classList.remove('show')"
+              style="flex:1;padding:3px;border:1px solid #6366f1;border-radius:4px;background:#eef2ff;cursor:pointer;font-size:10px;color:#4338ca;font-weight:600">Apply</button>
+          </div>${{l3Items}}</div></div>`;
+    }}
+
+    // Build L4 dropdown
+    const l4c = document.getElementById('chartL4Container');
+    if (l4c) {{
+      const l4Disabled = l3.length === 0;
+      if (l4Disabled) {{
+        l4c.innerHTML = `<button disabled style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#f5f5f5;font-size:11px;color:#aaa;cursor:not-allowed">All Sub-cat (L4) &#9660;</button>`;
+      }} else {{
+        let l4Items = '';
+        l4Options.forEach(v => {{
+          l4Items += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
+            <input type="checkbox" ${{l4.includes(v)?'checked':''}} data-chartl4="${{v}}" style="cursor:pointer"> ${{v}}</label>`;
+        }});
+        const l4Cnt = l4.length;
+        l4c.innerHTML = `<div style="position:relative;display:inline-block">
+          <button onclick="document.getElementById('chartL4DD').classList.toggle('show')"
+            style="padding:4px 10px;border:1px solid ${{l4Cnt?'#d97706':'var(--border)'}};border-radius:6px;background:${{l4Cnt?'#fffbeb':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{l4Cnt?'#92400e':'inherit'}}">
+            ${{l4Cnt ? 'L4 ('+l4Cnt+')' : 'All Sub-cat (L4)'}} &#9660;</button>
+          <div id="chartL4DD" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:280px;max-height:300px;overflow-y:auto">
+            <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+              <button onclick="document.querySelectorAll('#chartL4DD input[data-chartl4]').forEach(c=>c.checked=true);chartApplyL4()"
+                style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+              <button onclick="document.querySelectorAll('#chartL4DD input[data-chartl4]').forEach(c=>c.checked=false);chartApplyL4()"
+                style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+              <button onclick="chartApplyL4();document.getElementById('chartL4DD').classList.remove('show')"
+                style="flex:1;padding:3px;border:1px solid #d97706;border-radius:4px;background:#fffbeb;cursor:pointer;font-size:10px;color:#92400e;font-weight:600">Apply</button>
+            </div>${{l4Items}}</div></div>`;
+      }}
+    }}
+
+    // Badges
+    let badges = '';
+    l3.forEach(v => {{ badges += `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
+    l4.forEach(v => {{ badges += `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
+    if (l3.length || l4.length) badges += `<button onclick="chartClearFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600">&#10005; Clear</button>`;
+    document.getElementById('chartBadges').innerHTML = badges;
+
+    renderAgingChart();
+  }} catch(e) {{
+    console.error('Chart load error:', e);
+  }}
+}}
+
+window.chartApplyBuckets = function() {{
+  window._chartSelectedBuckets = Array.from(document.querySelectorAll('#chartBucketDD input[data-chartbucket]:checked')).map(c => c.getAttribute('data-chartbucket'));
+  const total = document.querySelectorAll('#chartBucketDD input[data-chartbucket]').length;
+  const el = document.getElementById('chartBucketCount');
+  if (el) el.textContent = `(${{window._chartSelectedBuckets.length}}/${{total}})`;
+  renderAgingChart();
+}};
+
+window.chartApplyL3 = function() {{
+  window._chartSelectedL3 = Array.from(document.querySelectorAll('#chartL3DD input[data-chartl3]:checked')).map(c => c.getAttribute('data-chartl3'));
+  window._chartSelectedL4 = [];
+  const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
+  if (from && to) loadAgingChart(from, to);
+}};
+
+window.chartApplyL4 = function() {{
+  window._chartSelectedL4 = Array.from(document.querySelectorAll('#chartL4DD input[data-chartl4]:checked')).map(c => c.getAttribute('data-chartl4'));
+  const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
+  if (from && to) loadAgingChart(from, to);
+}};
+
+window.chartClearFilters = function() {{
+  window._chartSelectedL3 = [];
+  window._chartSelectedL4 = [];
+  const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
+  if (from && to) loadAgingChart(from, to);
+}};
+
+function applyChartFilter() {{
+  const from = document.getElementById('chartFrom').value;
+  const to = document.getElementById('chartTo').value;
+  if (!from || !to) {{ alert('Please select both FROM and TO dates'); return; }}
+  if (from > to) {{ alert('FROM date must be before TO date'); return; }}
+  const d1 = new Date(from), d2 = new Date(to);
+  if ((d2 - d1) / 86400000 > 120) {{ alert('Max range is 120 days'); return; }}
+  loadAgingChart(from, to);
+}}
+
+function renderAgingChart() {{
+  const dates = window._chartDates;
+  const buckets = window._chartBuckets;
+  if (!dates || !dates.length || !buckets) return;
+
+  const canvas = document.getElementById('agingTrendChart');
+  if (!canvas) return;
+
+  if (_agingChart) {{ _agingChart.destroy(); _agingChart = null; }}
+
+  const visibleBuckets = window._chartSelectedBuckets.filter(b => BUCKET_LABELS.includes(b));
+  if (!visibleBuckets.length) return;
+
+  const shortLabel = (ds) => {{ const dt = new Date(ds+'T00:00:00'); return dt.toLocaleDateString('en-IN',{{day:'numeric',month:'short'}}); }};
+  const labels = dates.map(shortLabel);
+  const type = _agingChartType;
+
+  // Build datasets
+  const datasets = [];
+  visibleBuckets.forEach((label, i) => {{
+    const idx = BUCKET_LABELS.indexOf(label);
+    const color = BUCKET_COLORS[idx >= 0 ? idx : i % BUCKET_COLORS.length];
+    const data = dates.map(d => (buckets[label] && buckets[label][d]) || 0);
+
+    if (type === 'pie' || type === 'doughnut') return;
+
+    const ds = {{
+      label: label,
+      data: data,
+      backgroundColor: color + (type === 'area' || type === 'stackedArea' ? '55' : 'cc'),
+      borderColor: color,
+      borderWidth: type === 'line' || type === 'area' || type === 'stackedArea' ? 2.5 : 1,
+      pointRadius: type === 'line' || type === 'area' || type === 'stackedArea' ? 3 : 0,
+      pointHoverRadius: 5,
+      tension: 0.3,
+    }};
+
+    if (type === 'area' || type === 'stackedArea') ds.fill = type === 'stackedArea' ? 'origin' : true;
+    if (type === 'combo') {{
+      if (i < Math.ceil(visibleBuckets.length / 2)) {{ ds.type = 'bar'; }}
+      else {{ ds.type = 'line'; ds.borderWidth = 2.5; ds.pointRadius = 3; ds.fill = false; }}
+    }}
+    datasets.push(ds);
+  }});
+
+  // Pie / Doughnut
+  if (type === 'pie' || type === 'doughnut') {{
+    const totals = visibleBuckets.map(label => dates.reduce((sum, d) => sum + ((buckets[label] && buckets[label][d]) || 0), 0));
+    const colors = visibleBuckets.map((label, i) => {{ const idx = BUCKET_LABELS.indexOf(label); return BUCKET_COLORS[idx >= 0 ? idx : i]; }});
+    _agingChart = new Chart(canvas, {{
+      type: type,
+      data: {{ labels: visibleBuckets, datasets: [{{ data: totals, backgroundColor: colors.map(c => c + 'cc'), borderColor: colors, borderWidth: 2 }}] }},
+      options: {{
+        responsive: true, maintainAspectRatio: false,
+        plugins: {{
+          legend: {{ position: 'right', labels: {{ font: {{ size: 11 }}, padding: 10 }} }},
+          title: {{ display: true, text: `Aging Distribution (Total across ${{dates.length}} days)`, font: {{ size: 13 }} }},
+          tooltip: {{ callbacks: {{ label: function(ctx) {{
+            const total = ctx.dataset.data.reduce((a,b) => a + b, 0);
+            return `${{ctx.label}}: ${{ctx.raw.toLocaleString()}} (${{total > 0 ? (ctx.raw/total*100).toFixed(1) : 0}}%)`;
+          }} }} }}
+        }}
+      }}
+    }});
+    return;
+  }}
+
+  // Radar
+  if (type === 'radar') {{
+    _agingChart = new Chart(canvas, {{
+      type: 'radar',
+      data: {{ labels: visibleBuckets, datasets: dates.map((d, di) => {{
+        const color = `hsl(${{di * 360 / dates.length}}, 70%, 55%)`;
+        return {{ label: shortLabel(d), data: visibleBuckets.map(b => (buckets[b] && buckets[b][d]) || 0),
+          borderColor: color, backgroundColor: color + '30', borderWidth: 2, pointRadius: 3 }};
+      }}) }},
+      options: {{
+        responsive: true, maintainAspectRatio: false,
+        plugins: {{ legend: {{ position: 'right', labels: {{ font: {{ size: 10 }}, padding: 6 }} }} }},
+        scales: {{ r: {{ beginAtZero: true, ticks: {{ font: {{ size: 9 }} }}, pointLabels: {{ font: {{ size: 10 }} }} }} }}
+      }}
+    }});
+    return;
+  }}
+
+  // 100% stacked
+  if (type === 'percent') {{
+    dates.forEach((d, di) => {{
+      const total = visibleBuckets.reduce((s, b) => s + ((buckets[b] && buckets[b][d]) || 0), 0) || 1;
+      datasets.forEach(ds => {{ ds.data[di] = parseFloat((ds.data[di] / total * 100).toFixed(1)); }});
+    }});
+  }}
+
+  let chartType = 'bar';
+  if (type === 'line' || type === 'area' || type === 'stackedArea') chartType = 'line';
+  if (type === 'combo') chartType = 'bar';
+  const stacked = type === 'stackedBar' || type === 'stackedArea' || type === 'percent';
+
+  _agingChart = new Chart(canvas, {{
+    type: chartType,
+    data: {{ labels, datasets }},
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      interaction: {{ mode: 'index', intersect: false }},
+      plugins: {{
+        legend: {{ position: 'bottom', labels: {{ font: {{ size: 10 }}, padding: 8, usePointStyle: true, pointStyle: 'rectRounded' }} }},
+        tooltip: {{ callbacks: {{
+          label: function(ctx) {{ return `${{ctx.dataset.label}}: ${{ctx.raw.toLocaleString()}}${{type === 'percent' ? '%' : ''}}`; }},
+          footer: function(items) {{ if (type === 'percent') return 'Total: 100%'; return `Total: ${{items.reduce((s,i) => s+i.raw, 0).toLocaleString()}}`; }}
+        }} }}
+      }},
+      scales: {{
+        x: {{ stacked, grid: {{ display: false }}, ticks: {{ font: {{ size: 10 }} }} }},
+        y: {{ stacked, beginAtZero: true, max: type === 'percent' ? 100 : undefined,
+          ticks: {{ font: {{ size: 10 }}, callback: function(v) {{ return type === 'percent' ? v + '%' : v.toLocaleString(); }} }},
+          grid: {{ color: '#f0f0f0' }} }}
+      }}
+    }}
+  }});
 }}
 
 // ========== HEATMAP (Queue x Aging) ==========
