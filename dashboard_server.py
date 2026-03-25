@@ -3232,18 +3232,19 @@ init();
 <!-- AI Chat Widget -->
 <style>
 #aiChatBubble {{
-  position: fixed; bottom: 24px; right: 24px; z-index: 10000;
+  position: fixed; bottom: 24px; right: 24px; z-index: 2147483647;
   width: 56px; height: 56px; border-radius: 50%;
   background: linear-gradient(135deg, #667eea, #764ba2);
   color: #fff; border: none; cursor: pointer;
   box-shadow: 0 4px 16px rgba(102,126,234,0.4);
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; transition: transform 0.2s;
+  pointer-events: all !important;
 }}
 #aiChatBubble:hover {{ transform: scale(1.1); }}
 
 #aiChatPanel {{
-  position: fixed; bottom: 90px; right: 24px; z-index: 10000;
+  position: fixed; bottom: 90px; right: 24px; z-index: 2147483646;
   width: 420px; max-height: 600px; border-radius: 16px;
   background: #fff; box-shadow: 0 8px 32px rgba(0,0,0,0.18);
   display: none; flex-direction: column; overflow: hidden;
