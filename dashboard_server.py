@@ -38,6 +38,7 @@ from history_db import (
     get_category_l4_daily_trend,
     get_tickets_for_download,
     get_aging_daily_trend,
+    get_category_trend_chart,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -413,6 +414,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             l4 = params.get("l4", [None])[0]
             if date_from and date_to:
                 self.send_json(get_aging_daily_trend(date_from, date_to, l3_list=l3, l4_list=l4))
+            else:
+                self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/category-trend-chart":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            buckets = params.get("buckets", [None])[0]
+            l3 = params.get("l3", [None])[0]
+            l4 = params.get("l4", [None])[0]
+            if date_from and date_to:
+                self.send_json(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4))
             else:
                 self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/category-l4-trend":
@@ -1013,7 +1024,7 @@ def generate_dashboard_html():
     <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
   </div>
   <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-    <h3>&#128202; Aging Trend Chart</h3>
+    <h3>&#128202; Ticket Trend Chart</h3>
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
       <div id="chartBucketFilterContainer" style="margin-right:4px"></div>
       <div id="chartL3Container" style="margin-right:4px"></div>
@@ -1042,7 +1053,10 @@ def generate_dashboard_html():
       </div>
     </div>
   </div>
-  <div id="chartBadges" style="margin-bottom:8px"></div>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+    <div id="chartSubtitle"></div>
+    <div id="chartBadges"></div>
+  </div>
   <div style="position:relative;height:400px;width:100%">
     <canvas id="agingTrendChart"></canvas>
   </div>
@@ -2559,10 +2573,18 @@ function applyAgingTrendFilter() {{
 let _agingChart = null;
 let _agingChartType = 'bar';
 window._chartDates = [];
-window._chartBuckets = {{}};
+window._chartCategories = {{}};
+window._chartGroupBy = 'l3';
 window._chartSelectedL3 = [];
 window._chartSelectedL4 = [];
 window._chartSelectedBuckets = BUCKET_LABELS.slice();
+
+// 20 distinct colors for category lines
+const CHART_COLORS = [
+  '#2563eb','#dc2626','#16a34a','#ea580c','#9333ea','#ca8a04','#0891b2','#be123c',
+  '#65a30d','#7c3aed','#0d9488','#db2777','#4f46e5','#059669','#d97706','#6366f1',
+  '#e11d48','#14b8a6','#f59e0b','#8b5cf6'
+];
 
 function pickAgingChart(type, label, item) {{
   _agingChartType = type;
@@ -2602,7 +2624,10 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
 
   const l3 = window._chartSelectedL3;
   const l4 = window._chartSelectedL4;
-  let url = `/api/aging-daily-trend?from=${{fromDate}}&to=${{toDate}}`;
+  const buckets = window._chartSelectedBuckets;
+
+  let url = `/api/category-trend-chart?from=${{fromDate}}&to=${{toDate}}`;
+  if (buckets.length && buckets.length < BUCKET_LABELS.length) url += `&buckets=${{encodeURIComponent(buckets.join(','))}}`;
   if (l3.length) url += `&l3=${{encodeURIComponent(l3.join(','))}}`;
   if (l4.length) url += `&l4=${{encodeURIComponent(l4.join(','))}}`;
 
@@ -2610,11 +2635,12 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
     const data = await api(url);
     if (!data || !data.dates || !data.dates.length) return;
     window._chartDates = data.dates;
-    window._chartBuckets = data.buckets;
+    window._chartCategories = data.categories || {{}};
+    window._chartGroupBy = data.group_by || 'l3';
     const l3Options = data.available_l3 || [];
     const l4Options = data.available_l4 || [];
 
-    // Build Bucket filter
+    // Build Bucket filter (aging filter, not grouping)
     const bfc = document.getElementById('chartBucketFilterContainer');
     if (bfc) {{
       const selBuckets = window._chartSelectedBuckets;
@@ -2626,7 +2652,7 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
       bfc.innerHTML = `<div style="position:relative;display:inline-block">
         <button onclick="document.getElementById('chartBucketDD').classList.toggle('show')"
           style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px">
-          &#9776; Buckets <span id="chartBucketCount">(${{selBuckets.length}}/${{BUCKET_LABELS.length}})</span> &#9660;</button>
+          &#9776; Aging Filter <span id="chartBucketCount">(${{selBuckets.length}}/${{BUCKET_LABELS.length}})</span> &#9660;</button>
         <div id="chartBucketDD" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:200px;max-height:300px;overflow-y:auto">
           <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
             <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=true);chartApplyBuckets()"
@@ -2663,8 +2689,7 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
     // Build L4 dropdown
     const l4c = document.getElementById('chartL4Container');
     if (l4c) {{
-      const l4Disabled = l3.length === 0;
-      if (l4Disabled) {{
+      if (l3.length === 0) {{
         l4c.innerHTML = `<button disabled style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#f5f5f5;font-size:11px;color:#aaa;cursor:not-allowed">All Sub-cat (L4) &#9660;</button>`;
       }} else {{
         let l4Items = '';
@@ -2689,11 +2714,19 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
       }}
     }}
 
+    // Subtitle showing what each line represents
+    const subtitle = document.getElementById('chartSubtitle');
+    if (subtitle) {{
+      const groupLabel = window._chartGroupBy === 'l4' ? 'L4 Sub-categories' : 'L3 Categories';
+      subtitle.innerHTML = `<span style="font-size:11px;color:#6b7280">Each line/bar = <strong>${{groupLabel}}</strong></span>`;
+    }}
+
     // Badges
     let badges = '';
     l3.forEach(v => {{ badges += `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
     l4.forEach(v => {{ badges += `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
-    if (l3.length || l4.length) badges += `<button onclick="chartClearFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600">&#10005; Clear</button>`;
+    if (buckets.length < BUCKET_LABELS.length) badges += `<span style="background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">Aging: ${{buckets.length}}/${{BUCKET_LABELS.length}}</span> `;
+    if (l3.length || l4.length || buckets.length < BUCKET_LABELS.length) badges += `<button onclick="chartClearFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600">&#10005; Clear All</button>`;
     document.getElementById('chartBadges').innerHTML = badges;
 
     renderAgingChart();
@@ -2707,7 +2740,8 @@ window.chartApplyBuckets = function() {{
   const total = document.querySelectorAll('#chartBucketDD input[data-chartbucket]').length;
   const el = document.getElementById('chartBucketCount');
   if (el) el.textContent = `(${{window._chartSelectedBuckets.length}}/${{total}})`;
-  renderAgingChart();
+  const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
+  if (from && to) loadAgingChart(from, to);
 }};
 
 window.chartApplyL3 = function() {{
@@ -2726,6 +2760,7 @@ window.chartApplyL4 = function() {{
 window.chartClearFilters = function() {{
   window._chartSelectedL3 = [];
   window._chartSelectedL4 = [];
+  window._chartSelectedBuckets = BUCKET_LABELS.slice();
   const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
   if (from && to) loadAgingChart(from, to);
 }};
@@ -2742,32 +2777,31 @@ function applyChartFilter() {{
 
 function renderAgingChart() {{
   const dates = window._chartDates;
-  const buckets = window._chartBuckets;
-  if (!dates || !dates.length || !buckets) return;
+  const categories = window._chartCategories;
+  if (!dates || !dates.length || !categories) return;
 
   const canvas = document.getElementById('agingTrendChart');
   if (!canvas) return;
 
   if (_agingChart) {{ _agingChart.destroy(); _agingChart = null; }}
 
-  const visibleBuckets = window._chartSelectedBuckets.filter(b => BUCKET_LABELS.includes(b));
-  if (!visibleBuckets.length) return;
+  const catNames = Object.keys(categories);
+  if (!catNames.length) return;
 
   const shortLabel = (ds) => {{ const dt = new Date(ds+'T00:00:00'); return dt.toLocaleDateString('en-IN',{{day:'numeric',month:'short'}}); }};
   const labels = dates.map(shortLabel);
   const type = _agingChartType;
 
-  // Build datasets
+  // Build datasets — each line/bar = one L3 or L4 category
   const datasets = [];
-  visibleBuckets.forEach((label, i) => {{
-    const idx = BUCKET_LABELS.indexOf(label);
-    const color = BUCKET_COLORS[idx >= 0 ? idx : i % BUCKET_COLORS.length];
-    const data = dates.map(d => (buckets[label] && buckets[label][d]) || 0);
+  catNames.forEach((catName, i) => {{
+    const color = CHART_COLORS[i % CHART_COLORS.length];
+    const data = dates.map(d => (categories[catName] && categories[catName][d]) || 0);
 
     if (type === 'pie' || type === 'doughnut') return;
 
     const ds = {{
-      label: label,
+      label: catName,
       data: data,
       backgroundColor: color + (type === 'area' || type === 'stackedArea' ? '55' : 'cc'),
       borderColor: color,
@@ -2782,7 +2816,7 @@ function renderAgingChart() {{
 
     if (type === 'area' || type === 'stackedArea') ds.fill = type === 'stackedArea' ? 'origin' : true;
     if (type === 'combo') {{
-      if (i < Math.ceil(visibleBuckets.length / 2)) {{ ds.type = 'bar'; }}
+      if (i < Math.ceil(catNames.length / 2)) {{ ds.type = 'bar'; }}
       else {{ ds.type = 'line'; ds.borderWidth = 3; ds.pointRadius = 5; ds.pointBorderWidth = 2; ds.pointBorderColor = '#fff'; ds.fill = false; }}
     }}
     datasets.push(ds);
@@ -2790,17 +2824,17 @@ function renderAgingChart() {{
 
   // Pie / Doughnut
   if (type === 'pie' || type === 'doughnut') {{
-    const totals = visibleBuckets.map(label => dates.reduce((sum, d) => sum + ((buckets[label] && buckets[label][d]) || 0), 0));
-    const colors = visibleBuckets.map((label, i) => {{ const idx = BUCKET_LABELS.indexOf(label); return BUCKET_COLORS[idx >= 0 ? idx : i]; }});
+    const totals = catNames.map(cat => dates.reduce((sum, d) => sum + ((categories[cat] && categories[cat][d]) || 0), 0));
+    const colors = catNames.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
     _agingChart = new Chart(canvas, {{
       type: type,
-      data: {{ labels: visibleBuckets, datasets: [{{ data: totals, backgroundColor: colors.map(c => c + 'cc'), borderColor: colors, borderWidth: 2 }}] }},
+      data: {{ labels: catNames, datasets: [{{ data: totals, backgroundColor: colors.map(c => c + 'cc'), borderColor: colors, borderWidth: 2 }}] }},
       plugins: [ChartDataLabels],
       options: {{
         responsive: true, maintainAspectRatio: false,
         plugins: {{
           legend: {{ position: 'right', labels: {{ font: {{ size: 12, weight: 'bold' }}, padding: 12 }} }},
-          title: {{ display: true, text: `Aging Distribution (Total across ${{dates.length}} days)`, font: {{ size: 13 }} }},
+          title: {{ display: true, text: `Category Distribution (Total across ${{dates.length}} days)`, font: {{ size: 13 }} }},
           tooltip: {{ callbacks: {{ label: function(ctx) {{
             const total = ctx.dataset.data.reduce((a,b) => a + b, 0);
             return `${{ctx.label}}: ${{ctx.raw.toLocaleString()}} (${{total > 0 ? (ctx.raw/total*100).toFixed(1) : 0}}%)`;
@@ -2824,9 +2858,9 @@ function renderAgingChart() {{
   if (type === 'radar') {{
     _agingChart = new Chart(canvas, {{
       type: 'radar',
-      data: {{ labels: visibleBuckets, datasets: dates.map((d, di) => {{
-        const color = `hsl(${{di * 360 / dates.length}}, 70%, 55%)`;
-        return {{ label: shortLabel(d), data: visibleBuckets.map(b => (buckets[b] && buckets[b][d]) || 0),
+      data: {{ labels: dates.map(shortLabel), datasets: catNames.map((cat, ci) => {{
+        const color = CHART_COLORS[ci % CHART_COLORS.length];
+        return {{ label: cat, data: dates.map(d => (categories[cat] && categories[cat][d]) || 0),
           borderColor: color, backgroundColor: color + '30', borderWidth: 2, pointRadius: 3 }};
       }}) }},
       options: {{
@@ -2841,7 +2875,7 @@ function renderAgingChart() {{
   // 100% stacked
   if (type === 'percent') {{
     dates.forEach((d, di) => {{
-      const total = visibleBuckets.reduce((s, b) => s + ((buckets[b] && buckets[b][d]) || 0), 0) || 1;
+      const total = catNames.reduce((s, cat) => s + ((categories[cat] && categories[cat][d]) || 0), 0) || 1;
       datasets.forEach(ds => {{ ds.data[di] = parseFloat((ds.data[di] / total * 100).toFixed(1)); }});
     }});
   }}
@@ -2853,6 +2887,7 @@ function renderAgingChart() {{
 
   const showDatalabels = (type === 'line' || type === 'area' || type === 'combo');
   const isStacked = (type === 'stackedBar' || type === 'stackedArea' || type === 'percent');
+  const fewCategories = catNames.length <= 5;
 
   _agingChart = new Chart(canvas, {{
     type: chartType,
@@ -2890,13 +2925,14 @@ function renderAgingChart() {{
         datalabels: {{
           display: function(ctx) {{
             if (isStacked) return false;
+            if (!fewCategories) return false;
             if (type === 'bar') return ctx.dataset.data[ctx.dataIndex] > 0;
-            return showDatalabels;
+            return showDatalabels || type === 'line';
           }},
           color: function(ctx) {{ return ctx.dataset.borderColor || '#333'; }},
           font: {{ size: 10, weight: 'bold' }},
-          anchor: function(ctx) {{ return (type === 'bar') ? 'end' : 'end'; }},
-          align: function(ctx) {{ return (type === 'bar') ? 'top' : 'top'; }},
+          anchor: 'end',
+          align: 'top',
           offset: 2,
           formatter: function(val) {{ return type === 'percent' ? val + '%' : val.toLocaleString(); }},
           clamp: true,

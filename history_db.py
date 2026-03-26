@@ -1204,6 +1204,103 @@ def get_category_l4_daily_trend(date_from, date_to, l3_category):
     }
 
 
+def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=None, l4_filter=None):
+    """Return ticket counts grouped by L3 (or L4 if a single L3 is selected) per date.
+    bucket_filter: list of aging bucket labels to include (filter, not grouping)
+    l3_filter: list of L3 categories to show (if single L3, breaks down by L4)
+    l4_filter: list of L4 sub-categories to show
+    """
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Parse filters
+    bucket_vals = [x.strip() for x in bucket_filter.split(",") if x.strip()] if bucket_filter else []
+    l3_vals = [x.strip() for x in l3_filter.split(",") if x.strip()] if l3_filter else []
+    l4_vals = [x.strip() for x in l4_filter.split(",") if x.strip()] if l4_filter else []
+
+    # Determine grouping: if exactly 1 L3 selected (and no L4 filter), group by L4
+    group_by_l4 = (len(l3_vals) == 1 and len(l4_vals) == 0)
+
+    group_col = "COALESCE(disposition_l4, '(No L4)')" if group_by_l4 else "disposition_l3"
+
+    query = f"""
+        SELECT report_date, {group_col} as category, COUNT(*) as cnt
+        FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ?
+          AND disposition_l3 IS NOT NULL AND disposition_l3 != ''
+    """
+    params = [date_from, date_to]
+
+    if bucket_vals:
+        placeholders = ",".join("?" * len(bucket_vals))
+        query += f" AND aging_bucket IN ({placeholders})"
+        params.extend(bucket_vals)
+
+    if l3_vals:
+        placeholders = ",".join("?" * len(l3_vals))
+        query += f" AND disposition_l3 IN ({placeholders})"
+        params.extend(l3_vals)
+
+    if l4_vals:
+        placeholders = ",".join("?" * len(l4_vals))
+        query += f" AND disposition_l4 IN ({placeholders})"
+        params.extend(l4_vals)
+
+    query += " GROUP BY report_date, category ORDER BY report_date ASC"
+    c.execute(query, params)
+    raw = c.fetchall()
+
+    # Get dates
+    c.execute("""
+        SELECT DISTINCT report_date FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date ASC
+    """, (date_from, date_to))
+    dates = [r["report_date"] for r in c.fetchall()]
+
+    # Build categories dict: { "Category Name": { "2026-03-20": 50, ... }, ... }
+    categories = {}
+    for r in raw:
+        cat = r["category"] if r["category"] else "(Unknown)"
+        if cat not in categories:
+            categories[cat] = {}
+        categories[cat][r["report_date"]] = r["cnt"]
+
+    # Sort categories by total count (descending)
+    sorted_cats = sorted(categories.keys(), key=lambda k: sum(categories[k].values()), reverse=True)
+    categories_sorted = {k: categories[k] for k in sorted_cats}
+
+    # Get available L3/L4 for filter dropdowns
+    c.execute("""
+        SELECT DISTINCT disposition_l3 FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ? AND disposition_l3 IS NOT NULL AND disposition_l3 != ''
+        ORDER BY disposition_l3
+    """, (date_from, date_to))
+    available_l3 = [r["disposition_l3"] for r in c.fetchall()]
+
+    l4_query = """
+        SELECT DISTINCT disposition_l4 FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ? AND disposition_l4 IS NOT NULL AND disposition_l4 != ''
+    """
+    l4_params = [date_from, date_to]
+    if l3_vals:
+        placeholders = ",".join("?" * len(l3_vals))
+        l4_query += f" AND disposition_l3 IN ({placeholders})"
+        l4_params.extend(l3_vals)
+    l4_query += " ORDER BY disposition_l4"
+    c.execute(l4_query, l4_params)
+    available_l4 = [r["disposition_l4"] for r in c.fetchall()]
+
+    conn.close()
+    return {
+        "dates": dates,
+        "categories": categories_sorted,
+        "group_by": "l4" if group_by_l4 else "l3",
+        "available_l3": available_l3,
+        "available_l4": available_l4,
+    }
+
+
 def get_tickets_for_download(report_date_str, l3_category=None, l4_category=None):
     """Get raw tickets for download, optionally filtered by L3 and/or L4 category."""
     init_db()
