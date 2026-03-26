@@ -1204,11 +1204,12 @@ def get_category_l4_daily_trend(date_from, date_to, l3_category):
     }
 
 
-def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=None, l4_filter=None):
-    """Return ticket counts grouped by L3 (or L4 if a single L3 is selected) per date.
+def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=None, l4_filter=None, expand_l4=False):
+    """Return ticket counts grouped by L3 (or L4 if expand_l4=True and single L3) per date.
     bucket_filter: list of aging bucket labels to include (filter, not grouping)
-    l3_filter: list of L3 categories to show (if single L3, breaks down by L4)
+    l3_filter: list of L3 categories to show
     l4_filter: list of L4 sub-categories to show
+    expand_l4: if True and single L3 selected, drill into L4 sub-categories
     """
     conn = get_connection()
     c = conn.cursor()
@@ -1218,8 +1219,8 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
     l3_vals = [x.strip() for x in l3_filter.split(",") if x.strip()] if l3_filter else []
     l4_vals = [x.strip() for x in l4_filter.split(",") if x.strip()] if l4_filter else []
 
-    # Determine grouping: if exactly 1 L3 selected (and no L4 filter), group by L4
-    group_by_l4 = (len(l3_vals) == 1 and len(l4_vals) == 0)
+    # Determine grouping: only expand to L4 if explicitly requested
+    group_by_l4 = (expand_l4 and len(l3_vals) == 1) or (len(l4_vals) > 0)
 
     group_col = "COALESCE(disposition_l4, '(No L4)')" if group_by_l4 else "disposition_l3"
 

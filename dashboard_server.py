@@ -422,8 +422,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             buckets = params.get("buckets", [None])[0]
             l3 = params.get("l3", [None])[0]
             l4 = params.get("l4", [None])[0]
+            expand_l4 = params.get("expand_l4", ["0"])[0] == "1"
             if date_from and date_to:
-                self.send_json(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4))
+                self.send_json(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4, expand_l4=expand_l4))
             else:
                 self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/category-l4-trend":
@@ -2578,6 +2579,7 @@ window._chartGroupBy = 'l3';
 window._chartSelectedL3 = [];
 window._chartSelectedL4 = [];
 window._chartSelectedBuckets = BUCKET_LABELS.slice();
+window._chartExpandL4 = false; // false = show L3, true = drill into L4
 
 // 20 distinct colors for category lines
 const CHART_COLORS = [
@@ -2597,7 +2599,7 @@ function pickAgingChart(type, label, item) {{
 
 // Close dropdowns on outside click
 document.addEventListener('click', function(e) {{
-  ['agingChartDropdown','chartBucketDD','chartL3DD','chartL4DD'].forEach(id => {{
+  ['agingChartDropdown','chartBucketDD','chartL3DD'].forEach(id => {{
     const dd = document.getElementById(id);
     if (!dd) return;
     const containers = ['agingChartTypeContainer','chartBucketFilterContainer','chartL3Container','chartL4Container'];
@@ -2625,11 +2627,15 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
   const l3 = window._chartSelectedL3;
   const l4 = window._chartSelectedL4;
   const buckets = window._chartSelectedBuckets;
+  const expandL4 = window._chartExpandL4 && l3.length === 1;
 
   let url = `/api/category-trend-chart?from=${{fromDate}}&to=${{toDate}}`;
   if (buckets.length && buckets.length < BUCKET_LABELS.length) url += `&buckets=${{encodeURIComponent(buckets.join(','))}}`;
   if (l3.length) url += `&l3=${{encodeURIComponent(l3.join(','))}}`;
   if (l4.length) url += `&l4=${{encodeURIComponent(l4.join(','))}}`;
+  if (expandL4) url += `&expand_l4=1`;
+  // If expand L4 but multiple L3s, force L3 view
+  if (l3.length !== 1) window._chartExpandL4 = false;
 
   try {{
     const data = await api(url);
@@ -2640,14 +2646,14 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
     const l3Options = data.available_l3 || [];
     const l4Options = data.available_l4 || [];
 
-    // Build Bucket filter (aging filter, not grouping)
+    // Build Bucket filter (aging filter, not grouping) — Apply button only, no auto-apply
     const bfc = document.getElementById('chartBucketFilterContainer');
     if (bfc) {{
       const selBuckets = window._chartSelectedBuckets;
       let bItems = '';
       BUCKET_LABELS.forEach((b, i) => {{
         bItems += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
-          <input type="checkbox" ${{selBuckets.includes(b)?'checked':''}} data-chartbucket="${{b}}" onchange="chartApplyBuckets()" style="accent-color:${{BUCKET_COLORS[i]}};cursor:pointer"> ${{b}}</label>`;
+          <input type="checkbox" ${{selBuckets.includes(b)?'checked':''}} data-chartbucket="${{b}}" style="accent-color:${{BUCKET_COLORS[i]}};cursor:pointer"> ${{b}}</label>`;
       }});
       bfc.innerHTML = `<div style="position:relative;display:inline-block">
         <button onclick="document.getElementById('chartBucketDD').classList.toggle('show')"
@@ -2655,10 +2661,12 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
           &#9776; Aging Filter <span id="chartBucketCount">(${{selBuckets.length}}/${{BUCKET_LABELS.length}})</span> &#9660;</button>
         <div id="chartBucketDD" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:200px;max-height:300px;overflow-y:auto">
           <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
-            <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=true);chartApplyBuckets()"
+            <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=true)"
               style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
-            <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=false);chartApplyBuckets()"
+            <button onclick="document.querySelectorAll('#chartBucketDD input[data-chartbucket]').forEach(c=>c.checked=false)"
               style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+            <button onclick="chartApplyBuckets();document.getElementById('chartBucketDD').classList.remove('show')"
+              style="flex:1;padding:3px;border:1px solid #2563eb;border-radius:4px;background:#eff6ff;cursor:pointer;font-size:10px;color:#1d4ed8;font-weight:600">Apply</button>
           </div>${{bItems}}</div></div>`;
     }}
 
@@ -2677,48 +2685,35 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
           ${{l3Cnt ? 'L3 ('+l3Cnt+')' : 'All Categories (L3)'}} &#9660;</button>
         <div id="chartL3DD" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:250px;max-height:300px;overflow-y:auto">
           <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
-            <button onclick="document.querySelectorAll('#chartL3DD input[data-chartl3]').forEach(c=>c.checked=true);chartApplyL3()"
+            <button onclick="document.querySelectorAll('#chartL3DD input[data-chartl3]').forEach(c=>c.checked=true)"
               style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
-            <button onclick="document.querySelectorAll('#chartL3DD input[data-chartl3]').forEach(c=>c.checked=false);chartApplyL3()"
+            <button onclick="document.querySelectorAll('#chartL3DD input[data-chartl3]').forEach(c=>c.checked=false)"
               style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
             <button onclick="chartApplyL3();document.getElementById('chartL3DD').classList.remove('show')"
               style="flex:1;padding:3px;border:1px solid #6366f1;border-radius:4px;background:#eef2ff;cursor:pointer;font-size:10px;color:#4338ca;font-weight:600">Apply</button>
           </div>${{l3Items}}</div></div>`;
     }}
 
-    // Build L4 dropdown
+    // Build L4 expand button (only when exactly 1 L3 selected)
     const l4c = document.getElementById('chartL4Container');
     if (l4c) {{
-      if (l3.length === 0) {{
-        l4c.innerHTML = `<button disabled style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#f5f5f5;font-size:11px;color:#aaa;cursor:not-allowed">All Sub-cat (L4) &#9660;</button>`;
+      if (l3.length === 1) {{
+        const expanded = window._chartExpandL4;
+        l4c.innerHTML = `<button onclick="chartToggleL4()"
+          style="padding:4px 12px;border:1px solid ${{expanded?'#d97706':'var(--border)'}};border-radius:6px;background:${{expanded?'#fffbeb':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{expanded?'#92400e':'inherit'}};font-weight:${{expanded?'600':'normal'}}">
+          ${{expanded ? '&#9660; Collapse to L3' : '&#9654; Expand L4'}}
+        </button>`;
       }} else {{
-        let l4Items = '';
-        l4Options.forEach(v => {{
-          l4Items += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
-            <input type="checkbox" ${{l4.includes(v)?'checked':''}} data-chartl4="${{v}}" style="cursor:pointer"> ${{v}}</label>`;
-        }});
-        const l4Cnt = l4.length;
-        l4c.innerHTML = `<div style="position:relative;display:inline-block">
-          <button onclick="document.getElementById('chartL4DD').classList.toggle('show')"
-            style="padding:4px 10px;border:1px solid ${{l4Cnt?'#d97706':'var(--border)'}};border-radius:6px;background:${{l4Cnt?'#fffbeb':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{l4Cnt?'#92400e':'inherit'}}">
-            ${{l4Cnt ? 'L4 ('+l4Cnt+')' : 'All Sub-cat (L4)'}} &#9660;</button>
-          <div id="chartL4DD" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:280px;max-height:300px;overflow-y:auto">
-            <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
-              <button onclick="document.querySelectorAll('#chartL4DD input[data-chartl4]').forEach(c=>c.checked=true);chartApplyL4()"
-                style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
-              <button onclick="document.querySelectorAll('#chartL4DD input[data-chartl4]').forEach(c=>c.checked=false);chartApplyL4()"
-                style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
-              <button onclick="chartApplyL4();document.getElementById('chartL4DD').classList.remove('show')"
-                style="flex:1;padding:3px;border:1px solid #d97706;border-radius:4px;background:#fffbeb;cursor:pointer;font-size:10px;color:#92400e;font-weight:600">Apply</button>
-            </div>${{l4Items}}</div></div>`;
+        l4c.innerHTML = '';
+        window._chartExpandL4 = false;
       }}
     }}
 
     // Subtitle showing what each line represents
     const subtitle = document.getElementById('chartSubtitle');
     if (subtitle) {{
-      const groupLabel = window._chartGroupBy === 'l4' ? 'L4 Sub-categories' : 'L3 Categories';
-      subtitle.innerHTML = `<span style="font-size:11px;color:#6b7280">Each line/bar = <strong>${{groupLabel}}</strong></span>`;
+      const isL4 = window._chartGroupBy === 'l4';
+      subtitle.innerHTML = `<span style="font-size:11px;color:#6b7280">Each line/bar = <strong>${{isL4 ? 'L4 Sub-categories' : 'L3 Categories'}}</strong></span>`;
     }}
 
     // Badges
@@ -2747,12 +2742,13 @@ window.chartApplyBuckets = function() {{
 window.chartApplyL3 = function() {{
   window._chartSelectedL3 = Array.from(document.querySelectorAll('#chartL3DD input[data-chartl3]:checked')).map(c => c.getAttribute('data-chartl3'));
   window._chartSelectedL4 = [];
+  window._chartExpandL4 = false;
   const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
   if (from && to) loadAgingChart(from, to);
 }};
 
-window.chartApplyL4 = function() {{
-  window._chartSelectedL4 = Array.from(document.querySelectorAll('#chartL4DD input[data-chartl4]:checked')).map(c => c.getAttribute('data-chartl4'));
+window.chartToggleL4 = function() {{
+  window._chartExpandL4 = !window._chartExpandL4;
   const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
   if (from && to) loadAgingChart(from, to);
 }};
@@ -2761,6 +2757,7 @@ window.chartClearFilters = function() {{
   window._chartSelectedL3 = [];
   window._chartSelectedL4 = [];
   window._chartSelectedBuckets = BUCKET_LABELS.slice();
+  window._chartExpandL4 = false;
   const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
   if (from && to) loadAgingChart(from, to);
 }};
@@ -2771,7 +2768,7 @@ function applyChartFilter() {{
   if (!from || !to) {{ alert('Please select both FROM and TO dates'); return; }}
   if (from > to) {{ alert('FROM date must be before TO date'); return; }}
   const d1 = new Date(from), d2 = new Date(to);
-  if ((d2 - d1) / 86400000 > 120) {{ alert('Max range is 120 days'); return; }}
+  if ((d2 - d1) / 86400000 > 90) {{ alert('Max range is 90 days'); return; }}
   loadAgingChart(from, to);
 }}
 
