@@ -562,6 +562,7 @@ def generate_dashboard_html():
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PFT Pending Ticket Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   :root {{
@@ -1108,7 +1109,7 @@ def generate_dashboard_html():
 
 <script>
 const BUCKET_LABELS = ['< 4h','4h - 12h','12h - 24h','24h - 36h','36h - 48h','48h - 72h','72h - 120h','> 120h'];
-const BUCKET_COLORS = ['#3b82f6','#22c55e','#84cc16','#eab308','#f97316','#ef4444','#dc2626','#991b1b'];
+const BUCKET_COLORS = ['#2563eb','#16a34a','#65a30d','#ca8a04','#ea580c','#dc2626','#9333ea','#be123c'];
 const BUCKET_DB_KEYS = ['bucket_lt4h','bucket_4_12h','bucket_12_24h','bucket_24_36h','bucket_36_48h','bucket_48_72h','bucket_72_120h','bucket_gt120h'];
 const FILTERABLE_COLS = ['aging_bucket','current_queue','sub_status','status','zone','mapped_partner','city','channel_partner','disposition_l1','disposition_l2','disposition_l3','pending_days'];
 const OPERATORS = ['equals','not equals','contains','not contains','greater than','less than','is empty','is not empty'];
@@ -2770,16 +2771,19 @@ function renderAgingChart() {{
       data: data,
       backgroundColor: color + (type === 'area' || type === 'stackedArea' ? '55' : 'cc'),
       borderColor: color,
-      borderWidth: type === 'line' || type === 'area' || type === 'stackedArea' ? 2.5 : 1,
-      pointRadius: type === 'line' || type === 'area' || type === 'stackedArea' ? 3 : 0,
-      pointHoverRadius: 5,
+      borderWidth: type === 'line' || type === 'area' || type === 'stackedArea' || type === 'combo' ? 3 : 1,
+      pointRadius: type === 'line' || type === 'area' || type === 'stackedArea' ? 5 : 0,
+      pointHoverRadius: 7,
+      pointBackgroundColor: color,
+      pointBorderColor: '#fff',
+      pointBorderWidth: 2,
       tension: 0.3,
     }};
 
     if (type === 'area' || type === 'stackedArea') ds.fill = type === 'stackedArea' ? 'origin' : true;
     if (type === 'combo') {{
       if (i < Math.ceil(visibleBuckets.length / 2)) {{ ds.type = 'bar'; }}
-      else {{ ds.type = 'line'; ds.borderWidth = 2.5; ds.pointRadius = 3; ds.fill = false; }}
+      else {{ ds.type = 'line'; ds.borderWidth = 3; ds.pointRadius = 5; ds.pointBorderWidth = 2; ds.pointBorderColor = '#fff'; ds.fill = false; }}
     }}
     datasets.push(ds);
   }});
@@ -2791,15 +2795,25 @@ function renderAgingChart() {{
     _agingChart = new Chart(canvas, {{
       type: type,
       data: {{ labels: visibleBuckets, datasets: [{{ data: totals, backgroundColor: colors.map(c => c + 'cc'), borderColor: colors, borderWidth: 2 }}] }},
+      plugins: [ChartDataLabels],
       options: {{
         responsive: true, maintainAspectRatio: false,
         plugins: {{
-          legend: {{ position: 'right', labels: {{ font: {{ size: 11 }}, padding: 10 }} }},
+          legend: {{ position: 'right', labels: {{ font: {{ size: 12, weight: 'bold' }}, padding: 12 }} }},
           title: {{ display: true, text: `Aging Distribution (Total across ${{dates.length}} days)`, font: {{ size: 13 }} }},
           tooltip: {{ callbacks: {{ label: function(ctx) {{
             const total = ctx.dataset.data.reduce((a,b) => a + b, 0);
             return `${{ctx.label}}: ${{ctx.raw.toLocaleString()}} (${{total > 0 ? (ctx.raw/total*100).toFixed(1) : 0}}%)`;
-          }} }} }}
+          }} }} }},
+          datalabels: {{
+            color: '#fff',
+            font: {{ size: 11, weight: 'bold' }},
+            formatter: function(val, ctx) {{
+              const total = ctx.dataset.data.reduce((a,b) => a + b, 0);
+              const pct = total > 0 ? (val/total*100).toFixed(1) : 0;
+              return pct > 4 ? val.toLocaleString() : '';
+            }}
+          }}
         }}
       }}
     }});
@@ -2837,18 +2851,57 @@ function renderAgingChart() {{
   if (type === 'combo') chartType = 'bar';
   const stacked = type === 'stackedBar' || type === 'stackedArea' || type === 'percent';
 
+  const showDatalabels = (type === 'line' || type === 'area' || type === 'combo');
+  const isStacked = (type === 'stackedBar' || type === 'stackedArea' || type === 'percent');
+
   _agingChart = new Chart(canvas, {{
     type: chartType,
     data: {{ labels, datasets }},
+    plugins: [ChartDataLabels],
     options: {{
       responsive: true, maintainAspectRatio: false,
       interaction: {{ mode: 'index', intersect: false }},
       plugins: {{
-        legend: {{ position: 'bottom', labels: {{ font: {{ size: 10 }}, padding: 8, usePointStyle: true, pointStyle: 'rectRounded' }} }},
+        legend: {{
+          position: 'bottom',
+          labels: {{
+            font: {{ size: 12, weight: 'bold' }},
+            padding: 14,
+            usePointStyle: true,
+            pointStyle: 'circle',
+            pointStyleWidth: 12,
+            generateLabels: function(chart) {{
+              return chart.data.datasets.map((ds, i) => ({{
+                text: ds.label,
+                fillStyle: ds.borderColor || ds.backgroundColor,
+                strokeStyle: ds.borderColor || ds.backgroundColor,
+                lineWidth: 3,
+                pointStyle: 'circle',
+                hidden: !chart.isDatasetVisible(i),
+                datasetIndex: i
+              }}));
+            }}
+          }}
+        }},
         tooltip: {{ callbacks: {{
           label: function(ctx) {{ return `${{ctx.dataset.label}}: ${{ctx.raw.toLocaleString()}}${{type === 'percent' ? '%' : ''}}`; }},
           footer: function(items) {{ if (type === 'percent') return 'Total: 100%'; return `Total: ${{items.reduce((s,i) => s+i.raw, 0).toLocaleString()}}`; }}
-        }} }}
+        }} }},
+        datalabels: {{
+          display: function(ctx) {{
+            if (isStacked) return false;
+            if (type === 'bar') return ctx.dataset.data[ctx.dataIndex] > 0;
+            return showDatalabels;
+          }},
+          color: function(ctx) {{ return ctx.dataset.borderColor || '#333'; }},
+          font: {{ size: 10, weight: 'bold' }},
+          anchor: function(ctx) {{ return (type === 'bar') ? 'end' : 'end'; }},
+          align: function(ctx) {{ return (type === 'bar') ? 'top' : 'top'; }},
+          offset: 2,
+          formatter: function(val) {{ return type === 'percent' ? val + '%' : val.toLocaleString(); }},
+          clamp: true,
+          clip: false
+        }}
       }},
       scales: {{
         x: {{ stacked, grid: {{ display: false }}, ticks: {{ font: {{ size: 10 }} }} }},
